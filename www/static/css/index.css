@@ -1,0 +1,120 @@
+@import url("https://fonts.googleapis.com/css?family=Pinyon+Script:400|PT+Serif:400|PT+Serif:700");
+
+#main-container {
+  padding-bottom: 0 !important
+}
+
+.theme-image-container-bottom {
+  height: 0;
+  padding-bottom: 0
+}
+
+body,
+a,
+a:hover {
+  font-family: "PT Serif";
+  font-size: 12px;
+  font-style: normal;
+  font-weight: normal;
+  color: #FFFFFF;
+  line-height: 1.8
+}
+
+button {
+  font-family: "PT Serif";
+  font-size: 13px;
+  font-style: normal;
+  font-weight: normal;
+  color: #4D483F;
+  border-color: #F0E097;
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 4px;
+  background-color: #F0E097
+}
+
+button:hover {
+  background-color: #FFFFFF
+}
+
+#wedding-title {
+  font-family: "Pinyon Script";
+  font-size: 60px;
+  font-style: normal;
+  font-weight: normal;
+  color: #4D483F
+}
+
+#wedding-date-location {
+  font-family: "PT Serif";
+  font-size: 16px;
+  font-style: normal;
+  font-weight: normal;
+  color: #4D483F
+}
+
+#main-nav li a {
+  font-family: "PT Serif";
+  font-size: 16px;
+  font-style: normal;
+  font-weight: 700;
+  color: #FFFFFF
+}
+
+#main-nav li a:hover,
+#main-nav li a.selected {
+  color: #F0E097
+}
+
+#main-container-background {
+  background-image: url(../images/index/background.jpg);
+  background-repeat: no-repeat;
+  background-size: 100% auto;
+  background-position: top center
+}
+
+#main-nav-container.fixed {
+  background-color: rgba(80, 75, 72, 0.9)
+}
+
+#main-container-background,
+#main-nav>ul>li>ul {
+  background-color: #504B48
+}
+
+.section-title,
+.event-section-title,
+.wedding-event-section-title,
+.wedding-party-section-title,
+.location-section-title,
+.album-section-title,
+.photo-section-title,
+.registry-section-title {
+  font-family: "PT Serif";
+  font-size: 40px;
+  font-style: normal;
+  font-weight: normal;
+  color: #FFFFFF
+}
+
+.section-separator,
+.event-section-separator,
+.wedding-event-section-separator,
+.wedding-party-section-separator,
+.location-section-separator,
+.album-section-separator,
+.photo-section-separator,
+.registry-section-separator {
+  height: 1px
+}
+
+.item-title,
+.event-title,
+.wedding-event-title,
+.location-title {
+  font-family: "PT Serif";
+  font-size: 30px;
+  font-style: normal;
+  font-weight: normal;
+  color: #F0E097
+}
