@@ -306,8 +306,8 @@ footer a {
 .item-separator,
 .event-separator,
 .wedding-event-separator {
-  margin-top: 20px;
-  margin-bottom: 20px
+  margin-top: 24px;
+  margin-bottom: 24px
 }
 
 .item-separator:last-of-type,
