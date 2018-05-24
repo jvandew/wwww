@@ -1,5 +1,9 @@
 @import url("https://fonts.googleapis.com/css?family=Pinyon+Script:400|PT+Serif:400|PT+Serif:700");
 
+html, body {
+  height: 100%;
+}
+
 a,
 body {
   font-family: "PT Serif";
@@ -78,7 +82,8 @@ a:hover {
 }
 
 #content {
-  margin-top: 60px
+  margin-top: 60px;
+  padding-bottom: 32px;
 }
 
 #content a {
@@ -126,20 +131,21 @@ p {
   margin: auto
 }
 
-.footer {
-  position: relative;
+footer {
+  position: absolute;
+  bottom: 0;
   width: 100%;
   height: 32px;
-  line-height: 32px
+  line-height: 32px;
 }
 
-.footer a {
+footer a {
   font-family: HelveticaNeue, Helvetica, Arial, sans-serif;
   font-size: 12px;
   text-transform: none
 }
 
-.footer .footer-text {
+#footer-text {
   text-align: center;
   font-size: 12px;
   font-style: normal;
