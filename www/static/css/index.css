@@ -31,6 +31,18 @@ a:hover {
   background-position: top center
 }
 
+#background-repeat {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background-image: url(../images/index/background-repeat.jpg);
+  background-repeat: repeat-y;
+  background-size: 100% auto;
+  background-position: top center
+}
+
 #main-nav {
   display: block;
 }
