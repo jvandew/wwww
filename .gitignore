@@ -11,3 +11,7 @@ Cargo.lock
 
 # Don't commit images or other binary data
 /www/static/images/
+
+# Googlde Cloud datastore auth files
+/keys/
+
