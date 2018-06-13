@@ -16,7 +16,7 @@ use futures::Future;
 use futures::future;
 use futures::stream::Stream;
 use hyper::{Body, Client, Method, StatusCode};
-use hyper::Error;
+use hyper::{Error as HyperError};
 use hyper::client::{self, HttpConnector};
 use hyper::header::{self, Accept, Authorization, Bearer, ContentType};
 use hyper::mime::APPLICATION_JSON;
@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_core::reactor::Core;
 use url::form_urlencoded;
 
+// TODO(jacob): convert all Strings to &str
 #[derive(Deserialize, Serialize)]
 struct Claims {
     iss: String,
@@ -82,6 +83,137 @@ impl LoginData {
             last_name: last_name,
             password: password,
         }
+    }
+}
+
+fn parse_array_value<T>(
+    json: &Value,
+    value_reader: &Fn(&Value) -> Option<T>
+) -> Option<Vec<T>> {
+    json["arrayValue"]["values"].as_array().map(|values| {
+        values.into_iter().flat_map(value_reader).collect()
+    })
+}
+
+fn parse_boolean_value(json: &Value) -> Option<bool> {
+    json["booleanValue"].as_bool()
+}
+
+fn parse_integer_value(json: &Value) -> Option<i64> {
+    json["integerValue"].as_i64()
+}
+
+fn parse_string_value(json: &Value) -> Option<String> {
+    json["stringValue"].as_str().map(|s| s.to_string())
+}
+
+#[derive(Clone, Debug)]
+struct Name {
+    first_name: String,
+    last_name: String,
+}
+
+impl Name {
+    // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
+    //      format.
+    fn from_json(json: &Value) -> Option<Name> {
+        let properties = &json["entityValue"]["properties"];
+        let first_name = parse_string_value(&properties["first_name"])?;
+        let last_name = parse_string_value(&properties["last_name"])?;
+        let name = Name {
+            first_name: first_name,
+            last_name: last_name,
+        };
+        Some(name)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Rsvp {
+    /* A database entry for someone who has not yet RSVPed */
+    Empty {
+        invited: Vec<Name>,
+        plus_ones: i64,
+    },
+    /* A database entry for someone who has RSVPed */
+    Full {
+        attending: Vec<Name>,
+        dietary_restrictions: String,
+        email: Vec<String>,
+        invited: Vec<Name>,
+        other_notes: String,
+        plus_ones: i64,
+    },
+}
+
+impl Rsvp {
+    // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
+    //      format.
+    fn from_json(json: &Value) -> Option<Rsvp> {
+        let properties = &json["entity"]["properties"];
+
+        let invited = parse_array_value(&properties["invited"], &Name::from_json)?;
+        let plus_ones = parse_integer_value(&properties["plus_ones"])?;
+        let rsvp_received = parse_boolean_value(&properties["rsvp_received"])?;
+
+        if rsvp_received {
+            let attending = parse_array_value(&properties["attending"], &Name::from_json)?;
+            let dietary_restrictions = parse_string_value(&properties["dietary_restrictions"])?;
+            let email = parse_array_value(&properties["email"], &parse_string_value)?;
+            let other_notes = parse_string_value(&properties["other_notes"])?;
+
+            let full_rsvp = Rsvp::Full {
+                attending: attending,
+                dietary_restrictions: dietary_restrictions,
+                email: email,
+                invited: invited,
+                other_notes: other_notes,
+                plus_ones: plus_ones,
+            };
+            Some(full_rsvp)
+
+        } else {
+            let empty_rsvp = Rsvp::Empty {
+                invited: invited,
+                plus_ones: plus_ones,
+            };
+            Some(empty_rsvp)
+        }
+    }
+}
+
+#[derive(Debug)]
+enum RsvpQueryResult {
+    NotFound,
+    Single(Rsvp),
+    Multiple(Vec<Rsvp>),
+}
+
+impl RsvpQueryResult {
+    // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
+    //      format.
+    fn from_json(json: &Value) -> RsvpQueryResult {
+        json["batch"].get("entityResults").map_or_else(
+            || RsvpQueryResult::NotFound,
+            |entity_results| {
+                let entities = entity_results.as_array().expect("invalid query result json");
+                let rsvp_entries = entities
+                    .into_iter()
+                    .flat_map(|entity| Rsvp::from_json(entity))
+                    .collect::<Vec<Rsvp>>();
+                match rsvp_entries.as_slice() {
+                    // NOTE(jacob): This should never happen, unless we get back malformed
+                    //      json from google datastore. In this case we just log what we
+                    //      found and look the other way.
+                    [] => {
+                        println!("failed to parse query result json: {}", json);
+                        RsvpQueryResult::NotFound
+                    },
+                    [single] => RsvpQueryResult::Single(single.clone()),
+                    multiple => RsvpQueryResult::Multiple(multiple.to_vec()),
+                }
+            },
+        )
     }
 }
 
@@ -194,8 +326,8 @@ impl RsvpService {
 impl Service for RsvpService {
     type Request = server::Request<Body>;
     type Response = server::Response<Body>;
-    type Error = hyper::Error;
-    type Future = Box<Future<Item = Self::Response, Error = self::Error>>;
+    type Error = HyperError;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
 
     fn call(&self, request: Self::Request) -> Self::Future {
         let uri = request.uri().clone();
@@ -213,10 +345,13 @@ impl Service for RsvpService {
                     let request = build_query_request(account_details, query);
 
                     datastore_client.request(request).and_then(move |response| {
-                        response.body().concat2().map(move |query_result| {
-                            let rsvp_entry = str::from_utf8(&query_result)
+                        response.body().concat2().map(move |raw_query_result| {
+                            let query_result_string = str::from_utf8(&raw_query_result)
                                 .expect("unable to parse database rsvp entry");
-                            println!("{}", rsvp_entry);
+                            let query_result_json = serde_json::from_str(query_result_string)
+                                .expect("unable to parse database rsvp json");
+                            let query_result = RsvpQueryResult::from_json(&query_result_json);
+                            println!("{:?}", query_result);
 
                             let file = File::open(format!("www/rsvp2.html"))
                                 .expect("failed to open rsvp form file");
