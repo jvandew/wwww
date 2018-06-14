@@ -2,6 +2,7 @@ extern crate bytes;
 extern crate futures;
 extern crate hyper;
 extern crate hyper_tls;
+extern crate itertools;
 extern crate jsonwebtoken as jwt;
 extern crate tokio_core;
 extern crate url;
@@ -15,7 +16,7 @@ use bytes::Bytes;
 use futures::Future;
 use futures::future;
 use futures::stream::Stream;
-use hyper::{Body, Client, Method, StatusCode};
+use hyper::{Body, Client, Method, StatusCode, Uri};
 use hyper::{Error as HyperError};
 use hyper::client::{self, HttpConnector};
 use hyper::header::{self, Accept, Authorization, Bearer, ContentType};
@@ -66,24 +67,18 @@ struct LoginData {
 }
 
 impl LoginData {
-    // TODO(jacob): validate this...
-    fn from_form_data(form_data: &[u8]) -> LoginData {
+    fn from_form_data(form_data: &[u8]) -> Option<LoginData> {
         let param_map = form_urlencoded::parse(form_data).collect::<HashMap<_, _>>();
-        let first_name = param_map.get("first_name")
-            .expect("required param `first_name` not found")
-            .to_string();
-        let last_name = param_map.get("last_name")
-            .expect("required param `last_name` not found")
-            .to_string();
-        let password = param_map.get("password")
-            .expect("required param `password` not found")
-            .to_string();
+        let first_name = param_map.get("first_name")?;
+        let last_name = param_map.get("last_name")?;
+        let password = param_map.get("password")?;
 
-        LoginData {
-            first_name: first_name,
-            last_name: last_name,
-            password: password,
-        }
+        let login_data = LoginData {
+            first_name: first_name.to_string(),
+            last_name: last_name.to_string(),
+            password: password.to_string(),
+        };
+        Some(login_data)
     }
 }
 
@@ -326,7 +321,7 @@ impl RsvpService {
 
     fn failed_login(
         status_code: StatusCode,
-        reason: String
+        reason: String,
     ) -> Box<Future<Item = server::Response<Body>, Error = HyperError>> {
         let file = File::open(format!("www/rsvp.html"))
             .expect("failed to open login form file");
@@ -338,6 +333,22 @@ impl RsvpService {
         let response = server::Response::new()
             .with_status(status_code)
             .with_body(Body::from(rendered));
+        Box::new(future::ok(response))
+    }
+
+    fn handle_static(
+        uri: Uri,
+    ) -> Box<Future<Item = server::Response<Body>, Error = HyperError>> {
+        let response = File::open(format!("www{}", uri)).ok().map_or_else(
+            || server::Response::new()
+                .with_status(StatusCode::NotFound)
+                .with_body("Not Found"),
+            |file| {
+                let bytes = Bytes::from_iter(itertools::flatten(file.bytes()));
+                server::Response::new()
+                    .with_body(Body::from(bytes))
+            },
+        );
         Box::new(future::ok(response))
     }
 }
@@ -353,6 +364,8 @@ impl Service for RsvpService {
         println!("{} {}", request.method(), uri);
 
         match request.method() {
+            Method::Get => RsvpService::handle_static(uri),
+
             Method::Post => {
                 // TODO(jacob): Could we put a lifetime on RsvpService instead of cloning these?
                 let account_details = self.account_details.clone();
@@ -360,82 +373,88 @@ impl Service for RsvpService {
                 let rsvp_credentials = self.rsvp_credentials.clone();
 
                 let response_future = request.body().concat2().and_then(move |data| {
-                    let login_data = LoginData::from_form_data(&data);
-                    println!("login attempt: {:?}", login_data);
+                    LoginData::from_form_data(&data).map_or_else::<Self::Future, _, _>(
+                        || {
+                            println!(
+                                "invalid login attempt: {}",
+                                str::from_utf8(&data).unwrap_or(
+                                    format!("invalid login attempt (unparseable): {:?}", data).as_str()
+                                ),
+                            );
+                            let response = server::Response::new()
+                                .with_status(StatusCode::BadRequest)
+                                .with_body(Body::from("Bad Request"));
+                            Box::new(future::ok(response))
+                        },
 
-                    if login_data.password != rsvp_credentials.user {
-                        RsvpService::failed_login(
-                            StatusCode::Unauthorized,
-                            "Invalid login, please try again.".to_string(),
-                        )
+                        |login_data| {
+                            println!("login attempt: {:?}", login_data);
 
-                    } else {
-                        let query = query_for_name(&login_data.first_name, &login_data.last_name);
-                        let request = build_query_request(account_details, query);
+                            if login_data.password != rsvp_credentials.user {
+                                RsvpService::failed_login(
+                                    StatusCode::Unauthorized,
+                                    "Invalid login, please try again.".to_string(),
+                                )
 
-                        let response_future = datastore_client.request(request).and_then(move |response| {
-                            response.body().concat2().and_then(move |raw_query_result| {
-                                let query_result_string = str::from_utf8(&raw_query_result)
-                                    .expect("unable to parse database rsvp entry");
-                                let query_result_json = serde_json::from_str(query_result_string)
-                                    .expect("unable to parse database rsvp json");
+                            } else {
+                                let query = query_for_name(&login_data.first_name, &login_data.last_name);
+                                let request = build_query_request(account_details, query);
 
-                                match RsvpQueryResult::from_json(&query_result_json) {
-                                    RsvpQueryResult::NotFound => RsvpService::failed_login(
-                                        StatusCode::NotFound,
-                                        "Guest not found, please try again.".to_string(),
-                                    ),
+                                let response_future = datastore_client.request(request).and_then(move |response| {
+                                    response.body().concat2().and_then(move |raw_query_result| {
+                                        let query_result_string = str::from_utf8(&raw_query_result)
+                                            .expect("unable to parse database rsvp entry");
+                                        let query_result_json = serde_json::from_str(query_result_string)
+                                            .expect("unable to parse database rsvp json");
 
-                                    RsvpQueryResult::Multiple(rsvps) => {
-                                        println!(
-                                            "multiple rsvp entries found for {}, {}: {:?}",
-                                            login_data.last_name,
-                                            login_data.first_name,
-                                            rsvps,
-                                        );
-                                        RsvpService::failed_login(
-                                            StatusCode::InternalServerError,
-                                            "Multiple guest entries found, please contact Jacob.".to_string(),
-                                        )
-                                    },
+                                        match RsvpQueryResult::from_json(&query_result_json) {
+                                            RsvpQueryResult::NotFound => RsvpService::failed_login(
+                                                StatusCode::NotFound,
+                                                "Guest not found, please try again.".to_string(),
+                                            ),
 
-                                    RsvpQueryResult::Single(rsvp) => {
-                                        let file = File::open(format!("www/rsvp2.html"))
-                                            .expect("failed to open rsvp form file");
-                                        let mut buf_reader = BufReader::new(file);
-                                        let mut template = String::new();
-                                        buf_reader.read_to_string(&mut template)
-                                            .expect("failed to read rsvp form file");
-                                        let rendered = template
-                                            .replace("$first_name", &login_data.first_name)
-                                            .replace("$last_name", &login_data.last_name);
-                                        let response = server::Response::new()
-                                            .with_body(Body::from(rendered));
-                                        Box::new(future::ok(response))
-                                    },
-                                }
-                            })
-                        });
-                        Box::new(response_future)
-                    }
+                                            RsvpQueryResult::Multiple(rsvps) => {
+                                                println!(
+                                                    "multiple rsvp entries found for {}, {}: {:?}",
+                                                    login_data.last_name,
+                                                    login_data.first_name,
+                                                    rsvps,
+                                                );
+                                                RsvpService::failed_login(
+                                                    StatusCode::InternalServerError,
+                                                    "Multiple guest entries found, please contact Jacob.".to_string(),
+                                                )
+                                            },
+
+                                            RsvpQueryResult::Single(rsvp) => {
+                                                let file = File::open(format!("www/rsvp2.html"))
+                                                    .expect("failed to open rsvp form file");
+                                                let mut buf_reader = BufReader::new(file);
+                                                let mut template = String::new();
+                                                buf_reader.read_to_string(&mut template)
+                                                    .expect("failed to read rsvp form file");
+                                                let rendered = template
+                                                    .replace("$first_name", &login_data.first_name)
+                                                    .replace("$last_name", &login_data.last_name);
+                                                let response = server::Response::new()
+                                                    .with_body(Body::from(rendered));
+                                                Box::new(future::ok(response))
+                                            },
+                                        }
+                                    })
+                                });
+                                Box::new(response_future)
+                            }
+                        },
+                    )
                 });
                 Box::new(response_future)
-            },
-
-            Method::Get => {
-                let file = File::open(format!("www{}", request.uri()))
-                    .expect(&format!("failed to open file for request: {}", request.uri()));
-                let file_bytes = file.bytes().map(|byte_result| {
-                    byte_result.expect(&format!("failed to read file for request: {}", request.uri()))
-                });
-                let bytes = Bytes::from_iter(file_bytes);
-                Box::new(future::ok(server::Response::new().with_body(Body::from(bytes))))
             },
 
             _ => {
                 let response = server::Response::new()
                     .with_status(StatusCode::MethodNotAllowed)
-                    .with_body(Body::from("Method not allowed"));
+                    .with_body(Body::from("Method Not Allowed"));
                 Box::new(future::ok(response))
             },
         }
