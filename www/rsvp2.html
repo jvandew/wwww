@@ -22,24 +22,20 @@
       <div id="page">
         <section>
           <div class="section-title">The RSVP</div>
-          <div class="item-title">Hello there! Please log in.</div>
         </section>
         <div class="section-separator"></div>
         <section>
-          <form action="/rsvp.html" method="post">
+          <form action="/validate.html" method="post">
+            $guests
+            <div class="item-separator"></div>
             <div>
-              <label style="display: block;">First name</label>
-              <input type="text" name="first_name" value="$first_name" required>
+              <label style="color: #F0E097; display: block;">Contact email(s)</label>
+              <input type="text" name="email" value="$email">
             </div>
             <div class="item-separator"></div>
             <div>
-              <label style="display: block;">Last name</label>
-              <input type="text" name="last_name" value="$last_name" required>
-            </div>
-            <div class="item-separator"></div>
-            <div>
-              <label style="display: block;">Password</label>
-              <input type="password" name="password" required>
+              <label style="color: #F0E097; display: block;">Other notes</label>
+              <textarea name="other_notes">$other_notes</textarea>
             </div>
             <div class="item-separator"></div>
             <div>

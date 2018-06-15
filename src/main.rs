@@ -126,6 +126,27 @@ impl Name {
 }
 
 #[derive(Clone, Debug)]
+struct Guest {
+    name: Name,
+    dietary_notes: String,
+}
+
+impl Guest {
+    // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
+    //      format.
+    fn from_json(json: &Value) -> Option<Guest> {
+        let properties = &json["entityValue"]["properties"];
+        let name = Name::from_json(&properties["name"])?;
+        let dietary_notes = parse_string_value(&properties["dietary_notes"])?;
+        let guest = Guest {
+            name: name,
+            dietary_notes: dietary_notes,
+        };
+        Some(guest)
+    }
+}
+
+#[derive(Clone, Debug)]
 enum Rsvp {
     /* A database entry for someone who has not yet RSVPed */
     Empty {
@@ -134,8 +155,7 @@ enum Rsvp {
     },
     /* A database entry for someone who has RSVPed */
     Full {
-        attending: Vec<Name>,
-        dietary_restrictions: String,
+        attending: Vec<Guest>,
         email: Vec<String>,
         invited: Vec<Name>,
         other_notes: String,
@@ -154,14 +174,12 @@ impl Rsvp {
         let rsvp_received = parse_boolean_value(&properties["rsvp_received"])?;
 
         if rsvp_received {
-            let attending = parse_array_value(&properties["attending"], &Name::from_json)?;
-            let dietary_restrictions = parse_string_value(&properties["dietary_restrictions"])?;
+            let attending = parse_array_value(&properties["attending"], &Guest::from_json)?;
             let email = parse_array_value(&properties["email"], &parse_string_value)?;
             let other_notes = parse_string_value(&properties["other_notes"])?;
 
             let full_rsvp = Rsvp::Full {
                 attending: attending,
-                dietary_restrictions: dietary_restrictions,
                 email: email,
                 invited: invited,
                 other_notes: other_notes,
@@ -351,6 +369,85 @@ impl RsvpService {
         );
         Box::new(future::ok(response))
     }
+
+    fn render_form(
+        rsvp: Rsvp
+    ) -> Box<Future<Item = server::Response<Body>, Error = HyperError>> {
+        let form_file = File::open("www/rsvp2.html").expect("failed to open rsvp form template");
+        let mut form_reader = BufReader::new(form_file);
+        let mut form_template = String::new();
+        form_reader.read_to_string(&mut form_template).expect("failed to read form template");
+
+        let guest_file = File::open("templates/guest.html").expect("failed to open guest template");
+        let mut guest_reader = BufReader::new(guest_file);
+        let mut guest_template = String::new();
+        guest_reader.read_to_string(&mut guest_template).expect("failed to read guest template");
+
+        let rendered = match rsvp {
+            Rsvp::Empty {
+                invited,
+                plus_ones,
+            } => {
+                let guests = (1..(invited.len() + plus_ones as usize + 1)).fold(
+                    String::new(),
+                    |mut guests_builder, guest_num| {
+                        let rendered_guest = guest_template
+                            .replace("$num", &guest_num.to_string())
+                            .replace("$first_name", "")
+                            .replace("$last_name", "")
+                            .replace("$dietary_notes", "");
+                        guests_builder.push_str(&rendered_guest);
+                        guests_builder
+                    },
+                );
+
+                form_template
+                    .replace("$guests", &guests)
+                    .replace("$email", "")
+                    .replace("$other_notes", "")
+            },
+
+            Rsvp::Full {
+                attending,
+                email,
+                invited,
+                other_notes,
+                plus_ones,
+            } => {
+                let guests = (1..(invited.len() + plus_ones as usize + 1)).fold(
+                    String::new(),
+                    |mut guests_builder, guest_num| {
+                        let attending_opt = attending.get(guest_num);
+                        let first_name = attending_opt
+                            .map(|a| a.name.first_name.clone())
+                            .unwrap_or("".to_string());
+                        let last_name = attending_opt
+                            .map(|a| a.name.last_name.clone())
+                            .unwrap_or("".to_string());
+                        let dietary_notes = attending_opt
+                            .map(|a| a.dietary_notes.clone())
+                            .unwrap_or("".to_string());
+                        let rendered_guest = guest_template
+                            .replace("$num", &guest_num.to_string())
+                            .replace("$first_name", &first_name)
+                            .replace("$last_name", &last_name)
+                            .replace("$dietary_notes", &dietary_notes);
+                        guests_builder.push_str(&rendered_guest);
+                        guests_builder
+                    },
+                );
+
+                form_template
+                    .replace("$guests", &guests)
+                    .replace("$email", &email.join(", "))
+                    .replace("$other_notes", &other_notes)
+            },
+        };
+
+        let response = server::Response::new()
+            .with_body(Body::from(rendered));
+        Box::new(future::ok(response))
+    }
 }
 
 impl Service for RsvpService {
@@ -426,20 +523,7 @@ impl Service for RsvpService {
                                                 )
                                             },
 
-                                            RsvpQueryResult::Single(rsvp) => {
-                                                let file = File::open(format!("www/rsvp2.html"))
-                                                    .expect("failed to open rsvp form file");
-                                                let mut buf_reader = BufReader::new(file);
-                                                let mut template = String::new();
-                                                buf_reader.read_to_string(&mut template)
-                                                    .expect("failed to read rsvp form file");
-                                                let rendered = template
-                                                    .replace("$first_name", &login_data.first_name)
-                                                    .replace("$last_name", &login_data.last_name);
-                                                let response = server::Response::new()
-                                                    .with_body(Body::from(rendered));
-                                                Box::new(future::ok(response))
-                                            },
+                                            RsvpQueryResult::Single(rsvp) => RsvpService::render_form(rsvp),
                                         }
                                     })
                                 });
