@@ -53,6 +53,12 @@ struct AccountDetails {
     client_email: String,
 }
 
+#[derive(Clone)]
+struct AccountData {
+    details: AccountDetails,
+    private_key: Vec<u8>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct RsvpCredentials {
     admin: String,
@@ -146,15 +152,18 @@ impl Guest {
     }
 }
 
+// TODO(jacob): Is there some way to de-dupe common fields here?
 #[derive(Clone, Debug)]
-enum Rsvp {
+enum Rsvp<'a> {
     /* A database entry for someone who has not yet RSVPed */
     Empty {
+        key: &'a Value,
         invited: Vec<Name>,
         plus_ones: u8,
     },
     /* A database entry for someone who has RSVPed */
     Full {
+        key: &'a Value,
         attending: Vec<Guest>,
         email: Vec<String>,
         invited: Vec<Name>,
@@ -163,10 +172,11 @@ enum Rsvp {
     },
 }
 
-impl Rsvp {
+impl<'a> Rsvp<'a> {
     // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
     //      format.
     fn from_json(json: &Value) -> Option<Rsvp> {
+        let key = &json["entity"]["key"];
         let properties = &json["entity"]["properties"];
 
         let invited = parse_array_value(&properties["invited"], &Name::from_json)?;
@@ -179,6 +189,7 @@ impl Rsvp {
             let other_notes = parse_string_value(&properties["other_notes"])?;
 
             let full_rsvp = Rsvp::Full {
+                key: key,
                 attending: attending,
                 email: email,
                 invited: invited,
@@ -189,6 +200,7 @@ impl Rsvp {
 
         } else {
             let empty_rsvp = Rsvp::Empty {
+                key: key,
                 invited: invited,
                 plus_ones: plus_ones,
             };
@@ -198,13 +210,13 @@ impl Rsvp {
 }
 
 #[derive(Debug)]
-enum RsvpQueryResult {
+enum RsvpQueryResult<'a> {
     NotFound,
-    Single(Rsvp),
-    Multiple(Vec<Rsvp>),
+    Single(Rsvp<'a>),
+    Multiple(Vec<Rsvp<'a>>),
 }
 
-impl RsvpQueryResult {
+impl<'a> RsvpQueryResult<'a> {
     // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
     //      format.
     fn from_json(json: &Value) -> RsvpQueryResult {
@@ -235,9 +247,7 @@ impl RsvpQueryResult {
 static DATASTORE_API: &'static str = "google.datastore.v1.Datastore";
 static DATASTORE_HOST: &'static str = "https://datastore.googleapis.com";
 
-fn get_token(account_details: AccountDetails) -> String {
-    let private_key = fs::read("keys/private_rsa_key.der")
-        .expect("Failed to read private key");
+fn get_token(account_data: &AccountData) -> String {
     let time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Error getting unix timestamp")
@@ -245,28 +255,29 @@ fn get_token(account_details: AccountDetails) -> String {
 
     let mut jwt_header = Header::default();
     jwt_header.alg = Algorithm::RS256;
-    jwt_header.kid = Some(account_details.private_key_id);
+    jwt_header.kid = Some(account_data.details.private_key_id.clone());
     jwt_header.typ = Some("JWT".to_string());
 
     let claims = Claims {
-        iss: account_details.client_email.clone(),
-        sub: account_details.client_email.clone(),
+        iss: account_data.details.client_email.clone(),
+        sub: account_data.details.client_email.clone(),
         aud: format!("{}/{}", DATASTORE_HOST, DATASTORE_API),
         iat: time,
         exp: time + 3600,
     };
 
-    jwt::encode(&jwt_header, &claims, &private_key).expect("Error encoding json web token")
+    jwt::encode(&jwt_header, &claims, &account_data.private_key)
+        .expect("Error encoding json web token")
 }
 
-fn build_query_request(account_details: AccountDetails, query: String) -> client::Request<Body> {
+fn build_query_request(account_data: &AccountData, query: String) -> client::Request<Body> {
     let uri = format!(
         "{}/v1/projects/{}:runQuery",
         DATASTORE_HOST,
-        account_details.project_id,
+        account_data.details.project_id,
     ).parse().expect("Unable to parse query uri");
 
-    let token = get_token(account_details);
+    let token = get_token(account_data);
 
     let mut request = client::Request::new(Method::Post, uri);
     request.headers_mut().set(Accept(vec![header::qitem(APPLICATION_JSON)]));
@@ -320,19 +331,19 @@ fn query_for_name(first_name: &str, last_name: &str) -> String {
 #[derive(Clone)]
 struct RsvpService {
     datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
-    account_details: AccountDetails,
+    account_data: AccountData,
     rsvp_credentials: RsvpCredentials,
 }
 
 impl RsvpService {
     fn new(
         datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
-        account_details: AccountDetails,
+        account_data: AccountData,
         rsvp_credentials: RsvpCredentials,
     ) -> RsvpService {
         RsvpService {
             datastore_client: datastore_client,
-            account_details: account_details,
+            account_data: account_data,
             rsvp_credentials: rsvp_credentials,
         }
     }
@@ -370,8 +381,19 @@ impl RsvpService {
         Box::new(future::ok(response))
     }
 
+    fn get_auth_token(
+        account_data: &AccountData,
+        key: &Value,
+    ) -> String {
+        let mut header = Header::default();
+        header.alg = Algorithm::RS256;
+        jwt::encode(&header, key, &account_data.private_key)
+            .expect("Error encoding auth token")
+    }
+
     fn render_form(
-        rsvp: Rsvp
+        account_data: &AccountData,
+        rsvp: Rsvp,
     ) -> Box<Future<Item = server::Response<Body>, Error = HyperError>> {
         let form_file = File::open("www/rsvp2.html").expect("failed to open rsvp form template");
         let mut form_reader = BufReader::new(form_file);
@@ -385,9 +407,11 @@ impl RsvpService {
 
         let rendered = match rsvp {
             Rsvp::Empty {
+                key,
                 invited,
                 plus_ones,
             } => {
+                let token = RsvpService::get_auth_token(account_data, key);
                 let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
@@ -402,18 +426,21 @@ impl RsvpService {
                 );
 
                 form_template
+                    .replace("$token", &token)
                     .replace("$guests", &guests)
                     .replace("$email", "")
                     .replace("$other_notes", "")
             },
 
             Rsvp::Full {
+                key,
                 attending,
                 email,
                 invited,
                 other_notes,
                 plus_ones,
             } => {
+                let token = RsvpService::get_auth_token(account_data, key);
                 let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
@@ -438,6 +465,7 @@ impl RsvpService {
                 );
 
                 form_template
+                    .replace("$token", &token)
                     .replace("$guests", &guests)
                     .replace("$email", &email.join(", "))
                     .replace("$other_notes", &other_notes)
@@ -465,7 +493,7 @@ impl Service for RsvpService {
 
             Method::Post => {
                 // TODO(jacob): Could we put a lifetime on RsvpService instead of cloning these?
-                let account_details = self.account_details.clone();
+                let account_data = self.account_data.clone();
                 let datastore_client = self.datastore_client.clone();
                 let rsvp_credentials = self.rsvp_credentials.clone();
 
@@ -495,7 +523,7 @@ impl Service for RsvpService {
 
                             } else {
                                 let query = query_for_name(&login_data.first_name, &login_data.last_name);
-                                let request = build_query_request(account_details, query);
+                                let request = build_query_request(&account_data, query);
 
                                 let response_future = datastore_client.request(request).and_then(move |response| {
                                     response.body().concat2().and_then(move |raw_query_result| {
@@ -523,7 +551,9 @@ impl Service for RsvpService {
                                                 )
                                             },
 
-                                            RsvpQueryResult::Single(rsvp) => RsvpService::render_form(rsvp),
+                                            RsvpQueryResult::Single(rsvp) => {
+                                                RsvpService::render_form(&account_data, rsvp)
+                                            },
                                         }
                                     })
                                 });
@@ -550,6 +580,12 @@ fn main() {
         .expect("failed to open account details file");
     let account_details = serde_json::from_reader(account_file)
         .expect("failed to parse account details");
+    let account_private_key = fs::read("keys/private_rsa_key.der")
+        .expect("Failed to read account private key");
+    let account_data = AccountData {
+        details: account_details,
+        private_key: account_private_key,
+    };
 
     let rsvp_credentials_file = File::open("keys/rsvp_credentials.json")
         .expect("failed to open rsvp credentials file");
@@ -566,7 +602,7 @@ fn main() {
         8080,
     );
 
-    let service = RsvpService::new(client, account_details, rsvp_credentials);
+    let service = RsvpService::new(client, account_data, rsvp_credentials);
     let server = Http::new()
         .serve_addr_handle(&socket_addr, &event_loop_handle, move || Ok(service.clone()))
         .expect("unable to bind http server");
