@@ -388,11 +388,11 @@ impl RsvpService {
                 invited,
                 plus_ones,
             } => {
-                let guests = (1..(invited.len() + plus_ones as usize + 1)).fold(
+                let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
                         let rendered_guest = guest_template
-                            .replace("$num", &guest_num.to_string())
+                            .replace("$num", &(guest_num + 1).to_string())
                             .replace("$first_name", "")
                             .replace("$last_name", "")
                             .replace("$dietary_notes", "");
@@ -414,7 +414,7 @@ impl RsvpService {
                 other_notes,
                 plus_ones,
             } => {
-                let guests = (1..(invited.len() + plus_ones as usize + 1)).fold(
+                let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
                         let attending_opt = attending.get(guest_num);
@@ -428,7 +428,7 @@ impl RsvpService {
                             .map(|a| a.dietary_notes.clone())
                             .unwrap_or("".to_string());
                         let rendered_guest = guest_template
-                            .replace("$num", &guest_num.to_string())
+                            .replace("$num", &(guest_num + 1).to_string())
                             .replace("$first_name", &first_name)
                             .replace("$last_name", &last_name)
                             .replace("$dietary_notes", &dietary_notes);
