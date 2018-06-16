@@ -36,6 +36,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_core::reactor::Core;
 use url::form_urlencoded;
 
+static DATASTORE_API: &'static str = "google.datastore.v1.Datastore";
+static DATASTORE_HOST: &'static str = "https://datastore.googleapis.com";
+
 // TODO(jacob): convert all Strings to &str
 #[derive(Deserialize, Serialize)]
 struct Claims {
@@ -244,90 +247,6 @@ impl<'a> RsvpQueryResult<'a> {
     }
 }
 
-static DATASTORE_API: &'static str = "google.datastore.v1.Datastore";
-static DATASTORE_HOST: &'static str = "https://datastore.googleapis.com";
-
-fn get_token(account_data: &AccountData) -> String {
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Error getting unix timestamp")
-        .as_secs();
-
-    let mut jwt_header = Header::default();
-    jwt_header.alg = Algorithm::RS256;
-    jwt_header.kid = Some(account_data.details.private_key_id.clone());
-    jwt_header.typ = Some("JWT".to_string());
-
-    let claims = Claims {
-        iss: account_data.details.client_email.clone(),
-        sub: account_data.details.client_email.clone(),
-        aud: format!("{}/{}", DATASTORE_HOST, DATASTORE_API),
-        iat: time,
-        exp: time + 3600,
-    };
-
-    jwt::encode(&jwt_header, &claims, &account_data.private_key)
-        .expect("Error encoding json web token")
-}
-
-fn build_query_request(account_data: &AccountData, query: String) -> client::Request<Body> {
-    let uri = format!(
-        "{}/v1/projects/{}:runQuery",
-        DATASTORE_HOST,
-        account_data.details.project_id,
-    ).parse().expect("Unable to parse query uri");
-
-    let token = get_token(account_data);
-
-    let mut request = client::Request::new(Method::Post, uri);
-    request.headers_mut().set(Accept(vec![header::qitem(APPLICATION_JSON)]));
-    request.headers_mut().set(Authorization(Bearer { token: token }));
-    request.headers_mut().set(ContentType(APPLICATION_JSON));
-    request.set_body(Body::from(query));
-    request
-}
-
-fn query_for_name(first_name: &str, last_name: &str) -> String {
-    json!({
-        "query": {
-            "filter": {
-                "compositeFilter": {
-                    "op": "AND",
-                    "filters": [
-                        {
-                            "propertyFilter": {
-                                "property": {
-                                    "name": "invited.first_name",
-                                },
-                                "op": "EQUAL",
-                                "value": {
-                                    "stringValue": first_name.to_lowercase(),
-                                },
-                            },
-                        },
-                        {
-                            "propertyFilter": {
-                                "property": {
-                                    "name": "invited.last_name",
-                                },
-                                "op": "EQUAL",
-                                "value": {
-                                    "stringValue": last_name.to_lowercase(),
-                                },
-                            },
-                        },
-                    ],
-                },
-            },
-            "kind": [
-                {
-                    "name": "rsvp",
-                },
-            ],
-        },
-    }).to_string()
-}
-
 #[derive(Clone)]
 struct RsvpService {
     datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
@@ -346,6 +265,87 @@ impl RsvpService {
             account_data: account_data,
             rsvp_credentials: rsvp_credentials,
         }
+    }
+
+    fn query_for_name(first_name: &str, last_name: &str) -> String {
+        json!({
+            "query": {
+                "filter": {
+                    "compositeFilter": {
+                        "op": "AND",
+                        "filters": [
+                            {
+                                "propertyFilter": {
+                                    "property": {
+                                        "name": "invited.first_name",
+                                    },
+                                    "op": "EQUAL",
+                                    "value": {
+                                        "stringValue": first_name.to_lowercase(),
+                                    },
+                                },
+                            },
+                            {
+                                "propertyFilter": {
+                                    "property": {
+                                        "name": "invited.last_name",
+                                    },
+                                    "op": "EQUAL",
+                                    "value": {
+                                        "stringValue": last_name.to_lowercase(),
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                },
+                "kind": [
+                    {
+                        "name": "rsvp",
+                    },
+                ],
+            },
+        }).to_string()
+    }
+
+    fn get_datastore_token(account_data: &AccountData) -> String {
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Error getting unix timestamp")
+            .as_secs();
+
+        let mut jwt_header = Header::default();
+        jwt_header.alg = Algorithm::RS256;
+        jwt_header.kid = Some(account_data.details.private_key_id.clone());
+        jwt_header.typ = Some("JWT".to_string());
+
+        let claims = Claims {
+            iss: account_data.details.client_email.clone(),
+            sub: account_data.details.client_email.clone(),
+            aud: format!("{}/{}", DATASTORE_HOST, DATASTORE_API),
+            iat: time,
+            exp: time + 3600,
+        };
+
+        jwt::encode(&jwt_header, &claims, &account_data.private_key)
+            .expect("Error encoding json web token")
+    }
+
+    fn build_query_request(account_data: &AccountData, query: String) -> client::Request<Body> {
+        let uri = format!(
+            "{}/v1/projects/{}:runQuery",
+            DATASTORE_HOST,
+            account_data.details.project_id,
+        ).parse().expect("Unable to parse query uri");
+
+        let token = RsvpService::get_datastore_token(account_data);
+
+        let mut request = client::Request::new(Method::Post, uri);
+        request.headers_mut().set(Accept(vec![header::qitem(APPLICATION_JSON)]));
+        request.headers_mut().set(Authorization(Bearer { token: token }));
+        request.headers_mut().set(ContentType(APPLICATION_JSON));
+        request.set_body(Body::from(query));
+        request
     }
 
     fn failed_login(
@@ -522,8 +522,11 @@ impl Service for RsvpService {
                                 )
 
                             } else {
-                                let query = query_for_name(&login_data.first_name, &login_data.last_name);
-                                let request = build_query_request(&account_data, query);
+                                let query = RsvpService::query_for_name(
+                                    &login_data.first_name,
+                                    &login_data.last_name,
+                                );
+                                let request = RsvpService::build_query_request(&account_data, query);
 
                                 let response_future = datastore_client.request(request).and_then(move |response| {
                                     response.body().concat2().and_then(move |raw_query_result| {
