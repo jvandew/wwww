@@ -1,0 +1,24 @@
+label {
+  display: block;
+}
+
+input[type=radio] {
+  margin-right: .5em;
+  vertical-align: middle;
+}
+
+#going:checked ~ #going-inputs {
+  display: block;
+}
+
+#going:checked ~ #not-going-inputs {
+  display: none;
+}
+
+#not-going:checked ~ #going-inputs {
+  display: none;
+}
+
+#not-going:checked ~ #not-going-inputs {
+  display: block;
+}

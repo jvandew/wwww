@@ -11,6 +11,7 @@
   <link href="./static/images/favicon.ico" rel="shortcut icon">
   <link href="./static/css/bootstrap.min.css" rel="stylesheet">
   <link href="./static/css/index.css" rel="stylesheet">
+  <link href="./static/css/rsvp.css" rel="stylesheet">
 </head>
 
 <body>
@@ -25,17 +26,32 @@
         </section>
         <div class="section-separator"></div>
         <section>
-          <form action="/validate.html" method="post">
-            $guests
-            <div class="item-separator"></div>
-            <div>
-              <label style="color: #F0E097; display: block;">Contact email(s)</label>
-              <input type="text" name="email" value="$email">
+          <form action="/rsvp.html" method="post">
+            <label style="color: #F0E097;">Will you be joining us?</label>
+            <input type="radio" id="going" name="going" value=true checked/>
+            <label style="display: inline;">Yes, I will be attending!</label>
+            <br/>
+            <input type="radio" id="not-going" name="going" value=false/>
+            <label style="display: inline;">No, I won't be attending</label>
+            <div id="going-inputs">
+              $guests
+              <div class="item-separator"></div>
+              <div>
+                <label style="color: #F0E097;">Contact email(s)</label>
+                <input type="text" name="email" value="$email">
+              </div>
+              <div class="item-separator"></div>
+              <div>
+                <label style="color: #F0E097;">Other notes</label>
+                <textarea name="other_notes">$other_notes</textarea>
+              </div>
             </div>
-            <div class="item-separator"></div>
-            <div>
-              <label style="color: #F0E097; display: block;">Other notes</label>
-              <textarea name="other_notes">$other_notes</textarea>
+            <div id="not-going-inputs">
+              <div class="item-separator"></div>
+              <div class="item-image-container">
+                <img src="./static/images/rsvp/sad_kitten.jpg">
+              </div>
+              We're sorry to be missing you! 😢
             </div>
             <div class="item-separator"></div>
             <div>
