@@ -1,9 +1,10 @@
 label {
   display: block;
+  vertical-align: middle;
 }
 
-input[type=radio] {
-  margin-right: .5em;
+input[type=checkbox] {
+  margin-right: .25em;
   vertical-align: middle;
 }
 
@@ -15,10 +16,10 @@ input[type=radio] {
   display: none;
 }
 
-#not-going:checked ~ #going-inputs {
+#going:not(:checked) ~ #going-inputs {
   display: none;
 }
 
-#not-going:checked ~ #not-going-inputs {
+#going:not(:checked) ~ #not-going-inputs {
   display: block;
 }

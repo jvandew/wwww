@@ -28,11 +28,8 @@
         <section>
           <form action="/rsvp.html" method="post">
             <label style="color: #F0E097;">Will you be joining us?</label>
-            <input type="radio" id="going" name="going" value=true checked/>
-            <label style="display: inline;">Yes, I will be attending!</label>
-            <br/>
-            <input type="radio" id="not-going" name="going" value=false/>
-            <label style="display: inline;">No, I won't be attending</label>
+            <input type="checkbox" id="going" name="going" $checked/>
+            <label for="going" style="display: inline;">Yes, I will be attending!</label>
             <div id="going-inputs">
               $guests
               <div class="item-separator"></div>
@@ -51,12 +48,12 @@
               <div class="item-image-container">
                 <img src="./static/images/rsvp/sad_kitten.jpg">
               </div>
-              We're sorry to be missing you! 😢
+              Oh no! We're sorry to be missing you! 😢
             </div>
             <div class="item-separator"></div>
             <div>
               <input type="hidden" name="token" value="$token">
-              <input type="submit" value="Save">
+              <input type="submit" value="Submit">
             </div>
           </form>
         </section>

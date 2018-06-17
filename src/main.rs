@@ -170,7 +170,8 @@ enum Rsvp<'a> {
     Full {
         key: &'a Value,
         attending: Vec<Guest>,
-        email: Vec<String>,
+        email: String,
+        going: bool,
         invited: Vec<Name>,
         other_notes: String,
         plus_ones: u8,
@@ -183,33 +184,35 @@ impl<'a> Rsvp<'a> {
     fn from_json(json: &Value) -> Option<Rsvp> {
         let key = &json["entity"]["key"];
         let properties = &json["entity"]["properties"];
-
         let invited = parse_array_value(&properties["invited"], &Name::from_json)?;
         let plus_ones = parse_integer_value(&properties["plus_ones"])?;
-        let rsvp_received = parse_boolean_value(&properties["rsvp_received"])?;
 
-        if rsvp_received {
-            let attending = parse_array_value(&properties["attending"], &Guest::from_json)?;
-            let email = parse_array_value(&properties["email"], &parse_string_value)?;
-            let other_notes = parse_string_value(&properties["other_notes"])?;
+        match parse_boolean_value(&properties["going"]) {
+            None => {
+                let empty_rsvp = Rsvp::Empty {
+                    key: key,
+                    invited: invited,
+                    plus_ones: plus_ones,
+                };
+                Some(empty_rsvp)
+            },
 
-            let full_rsvp = Rsvp::Full {
-                key: key,
-                attending: attending,
-                email: email,
-                invited: invited,
-                other_notes: other_notes,
-                plus_ones: plus_ones,
-            };
-            Some(full_rsvp)
+            Some(going) => {
+                let attending = parse_array_value(&properties["attending"], &Guest::from_json)?;
+                let email = parse_string_value(&properties["email"])?;
+                let other_notes = parse_string_value(&properties["other_notes"])?;
 
-        } else {
-            let empty_rsvp = Rsvp::Empty {
-                key: key,
-                invited: invited,
-                plus_ones: plus_ones,
-            };
-            Some(empty_rsvp)
+                let full_rsvp = Rsvp::Full {
+                    key: key,
+                    attending: attending,
+                    email: email,
+                    going: going,
+                    invited: invited,
+                    other_notes: other_notes,
+                    plus_ones: plus_ones,
+                };
+                Some(full_rsvp)
+            },
         }
     }
 }
@@ -481,6 +484,7 @@ impl RsvpService {
 
                 form_template
                     .replace("$token", &token)
+                    .replace("$checked", "checked")
                     .replace("$guests", &guests)
                     .replace("$email", "")
                     .replace("$other_notes", "")
@@ -490,11 +494,13 @@ impl RsvpService {
                 key,
                 attending,
                 email,
+                going,
                 invited,
                 other_notes,
                 plus_ones,
             } => {
                 let token = RsvpService::get_auth_token(account_data, key);
+                let checked = if going { "checked" } else { "" };
                 let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
@@ -520,8 +526,9 @@ impl RsvpService {
 
                 form_template
                     .replace("$token", &token)
+                    .replace("$checked", &checked)
                     .replace("$guests", &guests)
-                    .replace("$email", &email.join(", "))
+                    .replace("$email", &email)
                     .replace("$other_notes", &other_notes)
             },
         };
