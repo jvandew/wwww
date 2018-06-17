@@ -370,73 +370,58 @@ impl RsvpService {
         datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
         rsvp_credentials: RsvpCredentials,
         data: &[u8],
-    ) -> ResponseFuture {
-        LoginData::from_form_data(data).map_or_else::<ResponseFuture, _, _>(
-            || {
-                println!(
-                    "invalid login attempt: {}",
-                    str::from_utf8(&data).unwrap_or(
-                        format!("invalid login attempt (unparseable): {:?}", data).as_str()
-                    ),
-                );
-                let response = server::Response::new()
-                    .with_status(StatusCode::BadRequest)
-                    .with_body(Body::from("Bad Request"));
-                Box::new(future::ok(response))
-            },
+    ) -> Option<ResponseFuture> {
+        let login_data = LoginData::from_form_data(data)?;
+        println!("login attempt: {:?}", login_data);
 
-            |login_data| {
-                println!("login attempt: {:?}", login_data);
+        if login_data.password != rsvp_credentials.user {
+            let response_future = RsvpService::failed_login(
+                StatusCode::Unauthorized,
+                "Invalid login, please try again.".to_string(),
+            );
+            Some(response_future)
 
-                if login_data.password != rsvp_credentials.user {
-                    RsvpService::failed_login(
-                        StatusCode::Unauthorized,
-                        "Invalid login, please try again.".to_string(),
-                    )
+        } else {
+            let query = RsvpService::query_for_name(
+                &login_data.first_name,
+                &login_data.last_name,
+            );
+            let request = RsvpService::build_query_request(&account_data, query);
 
-                } else {
-                    let query = RsvpService::query_for_name(
-                        &login_data.first_name,
-                        &login_data.last_name,
-                    );
-                    let request = RsvpService::build_query_request(&account_data, query);
+            let response_future = datastore_client.request(request).and_then(move |response| {
+                response.body().concat2().and_then(move |raw_query_result| {
+                    let query_result_string = str::from_utf8(&raw_query_result)
+                        .expect("unable to parse database rsvp entry");
+                    let query_result_json = serde_json::from_str(query_result_string)
+                        .expect("unable to parse database rsvp json");
 
-                    let response_future = datastore_client.request(request).and_then(move |response| {
-                        response.body().concat2().and_then(move |raw_query_result| {
-                            let query_result_string = str::from_utf8(&raw_query_result)
-                                .expect("unable to parse database rsvp entry");
-                            let query_result_json = serde_json::from_str(query_result_string)
-                                .expect("unable to parse database rsvp json");
+                    match RsvpQueryResult::from_json(&query_result_json) {
+                        RsvpQueryResult::NotFound => RsvpService::failed_login(
+                            StatusCode::NotFound,
+                            "Guest not found, please try again.".to_string(),
+                        ),
 
-                            match RsvpQueryResult::from_json(&query_result_json) {
-                                RsvpQueryResult::NotFound => RsvpService::failed_login(
-                                    StatusCode::NotFound,
-                                    "Guest not found, please try again.".to_string(),
-                                ),
+                        RsvpQueryResult::Multiple(rsvps) => {
+                            println!(
+                                "multiple rsvp entries found for {}, {}: {:?}",
+                                login_data.last_name,
+                                login_data.first_name,
+                                rsvps,
+                            );
+                            RsvpService::failed_login(
+                                StatusCode::InternalServerError,
+                                "Multiple guest entries found, please contact Jacob.".to_string(),
+                            )
+                        },
 
-                                RsvpQueryResult::Multiple(rsvps) => {
-                                    println!(
-                                        "multiple rsvp entries found for {}, {}: {:?}",
-                                        login_data.last_name,
-                                        login_data.first_name,
-                                        rsvps,
-                                    );
-                                    RsvpService::failed_login(
-                                        StatusCode::InternalServerError,
-                                        "Multiple guest entries found, please contact Jacob.".to_string(),
-                                    )
-                                },
-
-                                RsvpQueryResult::Single(rsvp) => {
-                                    RsvpService::render_form(&account_data, rsvp)
-                                },
-                            }
-                        })
-                    });
-                    Box::new(response_future)
-                }
-            },
-        )
+                        RsvpQueryResult::Single(rsvp) => {
+                            RsvpService::render_form(&account_data, rsvp)
+                        },
+                    }
+                })
+            });
+            Some(Box::new(response_future))
+        }
     }
 
     fn handle_static(uri: Uri) -> ResponseFuture {
@@ -572,7 +557,18 @@ impl Service for RsvpService {
                         datastore_client,
                         rsvp_credentials,
                         &data,
-                    )
+                    ).unwrap_or_else(|| {
+                        println!(
+                            "invalid login attempt: {}",
+                            str::from_utf8(&data).unwrap_or(
+                                format!("invalid login attempt (unparseable): {:?}", data).as_str()
+                            ),
+                        );
+                        let response = server::Response::new()
+                            .with_status(StatusCode::BadRequest)
+                            .with_body(Body::from("Bad Request"));
+                        Box::new(future::ok(response))
+                    })
                 });
                 Box::new(response_future)
             },
