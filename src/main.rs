@@ -4,6 +4,7 @@ extern crate hyper;
 extern crate hyper_tls;
 extern crate itertools;
 extern crate jsonwebtoken as jwt;
+extern crate regex;
 extern crate tokio_core;
 extern crate url;
 
@@ -23,7 +24,8 @@ use hyper::header::{self, Accept, Authorization, Bearer, ContentType};
 use hyper::mime::APPLICATION_JSON;
 use hyper::server::{self, Http, Service};
 use hyper_tls::HttpsConnector;
-use jwt::{Algorithm, Header};
+use jwt::{Algorithm, Header, Validation};
+use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
@@ -79,10 +81,10 @@ struct LoginData {
 
 impl LoginData {
     fn from_form_data(form_data: &[u8]) -> Option<LoginData> {
-        let param_map = form_urlencoded::parse(form_data).collect::<HashMap<_, _>>();
-        let first_name = param_map.get("first_name")?;
-        let last_name = param_map.get("last_name")?;
-        let password = param_map.get("password")?;
+        let params = form_urlencoded::parse(form_data).collect::<HashMap<_, _>>();
+        let first_name = params.get("first_name")?;
+        let last_name = params.get("last_name")?;
+        let password = params.get("password")?;
 
         let login_data = LoginData {
             first_name: first_name.to_string(),
@@ -249,6 +251,155 @@ impl<'a> RsvpQueryResult<'a> {
                 }
             },
         )
+    }
+}
+
+#[derive(Debug)]
+enum FormValue {
+    String(String),
+    Array(Vec<String>),
+}
+
+impl FormValue {
+    fn as_array(&self) -> Option<Vec<String>> {
+        match self {
+            FormValue::String(_) => None,
+            FormValue::Array(array) => Some(array.to_vec()),
+        }
+    }
+
+    fn as_string(&self) -> Option<String> {
+        match self {
+            FormValue::String(string) => Some(string.to_string()),
+            FormValue::Array(_) => None,
+        }
+    }
+
+    /* form_urlencoded::parse does not handle array data correctly, so we define our own
+     * helper here.
+     *
+     * NOTE(jacob): This function takes some liberties with data validation -- in
+     *      particular, undefined behavior includes:
+     *          - mixed array and non-array values for a single variable
+     *          - multiple occurances of the same variable
+     *          - skipping array indices
+     */
+    fn parse_form_data(form_data: &[u8]) -> HashMap<String, FormValue> {
+        // Parse everything into vectors for simplicity, and then do a final pass to convert
+        // to the appropriate enum.
+        let initial_vector_map: HashMap<String, Vec<Option<String>>> = HashMap::new();
+        // TODO(jacob): figure out how to cache this
+        let array_regex = Regex::new(r"(?P<name>.+)\[(?P<index>\d+)\]").unwrap();
+
+        let vector_map = form_urlencoded::parse(form_data)
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .fold(
+                initial_vector_map,
+                |mut vector_map, (name, value)| {
+                    let (var_name, index, mut new_vector) = array_regex.captures(&name)
+                        .and_then(|captures| {
+                            captures.name("name")
+                                .map(|mat| mat.as_str())
+                                .and_then(|var_name| {
+                                    captures.name("index").map(|mat| (var_name, mat.as_str()))
+                                }).and_then(|(var_name, index_str)| {
+                                    str::parse::<usize>(index_str).ok()
+                                        .map(|index| (var_name.to_string(), index))
+                                })
+                        }).map_or_else(
+                            || {
+                                let mut new_values = Vec::with_capacity(1);
+                                new_values.resize(1, None);
+                                (name, 0, new_values)
+                            },
+                            |(var_name, index)| {
+                                let new_vector = vector_map.get(&var_name).map_or_else(
+                                    || {
+                                        let mut new_values = Vec::with_capacity(index + 1);
+                                        new_values.resize(index + 1, None);
+                                        new_values
+                                    },
+                                    |values| {
+                                        let mut new_values = values.clone();
+                                        if new_values.len() <= index {
+                                            new_values.resize(index + 1, None);
+                                        };
+                                        new_values
+                                    },
+                                );
+                                (var_name, index, new_vector)
+                            },
+                        );
+
+                    new_vector[index] = Some(value);
+                    vector_map.insert(var_name, new_vector);
+                    vector_map
+                }
+            );
+
+        vector_map.into_iter().flat_map(|(name, values)| {
+            let flattened_values = values.into_iter().flat_map(|value_opt| value_opt).collect::<Vec<String>>();
+            match &flattened_values[..] {
+                [] => None,  // should never happen with well-formed input
+                [single] => Some((name, FormValue::String(single.to_string()))),
+                many => Some((name, FormValue::Array(many.to_vec()))),
+            }
+        }).collect()
+    }
+}
+
+#[derive(Debug)]
+struct RsvpFormData {
+    // TODO(jacob): Figure out how to make this a reference, as with the key on Rsvp.
+    key: Value,
+    attending: Vec<Guest>,
+    email: String,
+    going: bool,
+    other_notes: String,
+}
+
+impl RsvpFormData {
+    fn from_form_data(
+        account_data: &AccountData,
+        form_data: &[u8]
+    ) -> Option<RsvpFormData> {
+        let params = FormValue::parse_form_data(form_data);
+
+        let token = params.get("token")?.as_string()?;
+        let token_data = jwt::decode::<Value>(
+            &token,
+            &account_data.private_key,
+            &Validation::default(),
+        ).ok()?;
+        let key = token_data.claims;
+
+        let first_names = params.get("first_name")?.as_array()?;
+        let last_names = params.get("last_name")?.as_array()?;
+        let dietary_noteses = params.get("dietary_notes")?.as_array()?;
+        let attending = first_names.into_iter().zip(last_names).zip(dietary_noteses)
+            .map(|((first_name, last_name), dietary_notes)| {
+                Guest {
+                    name: Name {
+                        first_name: first_name,
+                        last_name: last_name,
+                    },
+                    dietary_notes: dietary_notes,
+                }
+            }).collect();
+
+        let email = params.get("email")?.as_string()?;
+        let going = params.get("going")
+            .map_or(Some(false), |going_param| Some(going_param.as_string()? == "yes"))?;
+        let other_notes = params.get("other_notes")?.as_string()?;
+
+        let rsvp_data = RsvpFormData {
+            key: key,
+            attending: attending,
+            email: email,
+            going: going,
+            other_notes: other_notes,
+        };
+        Some(rsvp_data)
     }
 }
 
@@ -441,13 +592,24 @@ impl RsvpService {
         Box::new(future::ok(response))
     }
 
+    // TODO(jacob): This should be a method on self.
+    fn handle_submission(
+        account_data: AccountData,
+        datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
+        data: &[u8],
+    ) -> Option<ResponseFuture> {
+        let rsvp_data = RsvpFormData::from_form_data(&account_data, data)?;
+        let response = server::Response::new()
+            .with_status(StatusCode::BadRequest)
+            .with_body(Body::from("Bad Request"));
+        Some(Box::new(future::ok(response)))
+    }
+
     fn get_auth_token(
         account_data: &AccountData,
         key: &Value,
     ) -> String {
-        let mut header = Header::default();
-        header.alg = Algorithm::RS256;
-        jwt::encode(&header, key, &account_data.private_key)
+        jwt::encode(&Header::default(), key, &account_data.private_key)
             .expect("Error encoding auth token")
     }
 
@@ -474,6 +636,7 @@ impl RsvpService {
                     |mut guests_builder, guest_num| {
                         let rendered_guest = guest_template
                             .replace("$num", &(guest_num + 1).to_string())
+                            .replace("$index", &guest_num.to_string())
                             .replace("$first_name", "")
                             .replace("$last_name", "")
                             .replace("$dietary_notes", "");
@@ -516,6 +679,7 @@ impl RsvpService {
                             .unwrap_or("".to_string());
                         let rendered_guest = guest_template
                             .replace("$num", &(guest_num + 1).to_string())
+                            .replace("$index", &guest_num.to_string())
                             .replace("$first_name", &first_name)
                             .replace("$last_name", &last_name)
                             .replace("$dietary_notes", &dietary_notes);
@@ -554,21 +718,35 @@ impl Service for RsvpService {
 
             Method::Post => {
                 // TODO(jacob): Could we put a lifetime on RsvpService instead of cloning these?
-                let account_data = self.account_data.clone();
-                let datastore_client = self.datastore_client.clone();
+                let account_data_clone_1 = self.account_data.clone();
+                let account_data_clone_2 = self.account_data.clone();
+                let datastore_client_clone_1 = self.datastore_client.clone();
+                let datastore_client_clone_2 = self.datastore_client.clone();
                 let rsvp_credentials = self.rsvp_credentials.clone();
 
                 let response_future = request.body().concat2().and_then(move |data| {
+                    println!(
+                        "received POST data: {}",
+                        str::from_utf8(&data).unwrap_or(
+                            format!("unparseable - {:?}", data).as_str()
+                        ),
+                    );
                     RsvpService::handle_login(
-                        account_data,
-                        datastore_client,
+                        account_data_clone_1,
+                        datastore_client_clone_1,
                         rsvp_credentials,
                         &data,
-                    ).unwrap_or_else(|| {
+                    ).or_else(|| {
+                        RsvpService::handle_submission(
+                            account_data_clone_2,
+                            datastore_client_clone_1,
+                            &data,
+                        )
+                    }).unwrap_or_else(|| {
                         println!(
-                            "invalid login attempt: {}",
+                            "invalid POST data: {}",
                             str::from_utf8(&data).unwrap_or(
-                                format!("invalid login attempt (unparseable): {:?}", data).as_str()
+                                format!("unparseable - {:?}", data).as_str()
                             ),
                         );
                         let response = server::Response::new()
