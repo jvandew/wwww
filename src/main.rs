@@ -96,6 +96,7 @@ impl LoginData {
     }
 }
 
+// TODO(jacob): Use Value::pointer instead of indexing for all of these.
 fn parse_array_value<T>(
     json: &Value,
     value_reader: &Fn(&Value) -> Option<T>
@@ -110,7 +111,7 @@ fn parse_boolean_value(json: &Value) -> Option<bool> {
 }
 
 fn parse_integer_value(json: &Value) -> Option<u8> {
-    // GCP datastore returns integers encoded as strings.
+    // GCP datastore handles integers encoded as strings.
     json["integerValue"].as_str().and_then(|s| s.parse().ok())
 }
 
@@ -126,17 +127,25 @@ fn render_array_value<T>(values: &Vec<T>, render_value: &Fn(&T) -> Value) -> Val
     })
 }
 
-fn render_boolean_value(value: bool) -> Value {
+fn render_boolean_value(value: &bool, exclude_from_indexes: bool) -> Value {
     json!({
         "booleanValue": value,
-        // "excludeFromIndexes": true,
+        "excludeFromIndexes": exclude_from_indexes,
     })
 }
 
-fn render_string_value(value: &String) -> Value {
+// GCP datastore handles integers encoded as strings.
+fn render_integer_value(value: &String, exclude_from_indexes: bool) -> Value {
+    json!({
+        "integerValue": value,
+        "excludeFromIndexes": exclude_from_indexes,
+    })
+}
+
+fn render_string_value(value: &String, exclude_from_indexes: bool) -> Value {
     json!({
         "stringValue": value,
-        // "excludeFromIndexes": true,
+        "excludeFromIndexes": exclude_from_indexes,
     })
 }
 
@@ -160,12 +169,12 @@ impl Name {
         Some(name)
     }
 
-    fn to_json(&self) -> Value {
+    fn to_json(&self, exclude_from_indexes: bool) -> Value {
         json!({
             "entityValue": {
                 "properties": {
-                  "first_name": render_string_value(&self.first_name),
-                  "last_name": render_string_value(&self.last_name),
+                  "first_name": render_string_value(&self.first_name, exclude_from_indexes),
+                  "last_name": render_string_value(&self.last_name, exclude_from_indexes),
                 },
             },
         })
@@ -196,8 +205,8 @@ impl Guest {
         json!({
             "entityValue": {
                 "properties": {
-                    "name": self.name.to_json(),
-                    "dietary_notes": render_string_value(&self.dietary_notes),
+                    "name": self.name.to_json(true),
+                    "dietary_notes": render_string_value(&self.dietary_notes, true),
                 },
             },
         })
@@ -206,16 +215,16 @@ impl Guest {
 
 // TODO(jacob): Is there some way to de-dupe common fields here?
 #[derive(Clone, Debug)]
-enum Rsvp<'a> {
+enum Rsvp {
     /* A database entry for someone who has not yet RSVPed */
     Empty {
-        key: &'a Value,
+        key: Value,
         invited: Vec<Name>,
         plus_ones: u8,
     },
     /* A database entry for someone who has RSVPed */
     Full {
-        key: &'a Value,
+        key: Value,
         attending: Vec<Guest>,
         email: String,
         going: bool,
@@ -225,11 +234,59 @@ enum Rsvp<'a> {
     },
 }
 
-impl<'a> Rsvp<'a> {
+impl Rsvp {
+    fn from_form_data(
+        account_data: &AccountData,
+        form_data: &[u8]
+    ) -> Option<Rsvp> {
+        let params = FormValue::parse_form_data(form_data);
+
+        let token = params.get("token")?.as_string()?;
+        let token_data = jwt::decode::<Value>(
+            &token,
+            &account_data.public_key,
+            &Validation::new(Algorithm::RS256),
+        ).ok()?.claims;
+
+        let key = token_data.get("key")?.clone();
+        let invited = parse_array_value(&token_data["invited"], &Name::from_json)?;
+        let plus_ones = parse_integer_value(&token_data["plus_ones"])?;
+
+        let first_names = params.get("first_name")?.as_array()?;
+        let last_names = params.get("last_name")?.as_array()?;
+        let dietary_noteses = params.get("dietary_notes")?.as_array()?;
+        let attending = first_names.into_iter().zip(last_names).zip(dietary_noteses)
+            .map(|((first_name, last_name), dietary_notes)| {
+                Guest {
+                    name: Name {
+                        first_name: first_name,
+                        last_name: last_name,
+                    },
+                    dietary_notes: dietary_notes,
+                }
+            }).collect();
+
+        let email = params.get("email")?.as_string()?;
+        let going = params.get("going")
+            .map_or(Some(false), |going_param| Some(going_param.as_string()? == "yes"))?;
+        let other_notes = params.get("other_notes")?.as_string()?;
+
+        let full_rsvp = Rsvp::Full {
+            key: key,
+            attending: attending,
+            email: email,
+            invited: invited,
+            going: going,
+            other_notes: other_notes,
+            plus_ones: plus_ones,
+        };
+        Some(full_rsvp)
+    }
+
     // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
     //      format.
     fn from_json(json: &Value) -> Option<Rsvp> {
-        let key = &json["entity"]["key"];
+        let key = json["entity"]["key"].clone();
         let properties = &json["entity"]["properties"];
         let invited = parse_array_value(&properties["invited"], &Name::from_json)?;
         let plus_ones = parse_integer_value(&properties["plus_ones"])?;
@@ -262,16 +319,50 @@ impl<'a> Rsvp<'a> {
             },
         }
     }
+
+    fn to_json(&self) -> Value {
+        match self {
+            Rsvp::Empty {
+                key,
+                invited,
+                plus_ones,
+            } => json!({
+                "key": key,
+                "invited": render_array_value(&invited, &|name| name.to_json(false)),
+                "plus_ones": render_integer_value(&plus_ones.to_string(), true),
+            }),
+
+            Rsvp::Full {
+                key,
+                attending,
+                email,
+                going,
+                invited,
+                other_notes,
+                plus_ones,
+            } => json!({
+                "key": key,
+                "properties": {
+                    "attending": render_array_value(&attending, &|guest| guest.to_json()),
+                    "email": render_string_value(&email, true),
+                    "invited": render_array_value(&invited, &|name| name.to_json(false)),
+                    "going": render_boolean_value(&going, false),
+                    "other_notes": render_string_value(&other_notes, true),
+                    "plus_ones": render_integer_value(&plus_ones.to_string(), true),
+                },
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
-enum RsvpQueryResult<'a> {
+enum RsvpQueryResult {
     NotFound,
-    Single(Rsvp<'a>),
-    Multiple(Vec<Rsvp<'a>>),
+    Single(Rsvp),
+    Multiple(Vec<Rsvp>),
 }
 
-impl<'a> RsvpQueryResult<'a> {
+impl RsvpQueryResult {
     // TODO(jacob): Figure out how to define Deserialize/Serialize for the datastore json
     //      format.
     fn from_json(json: &Value) -> RsvpQueryResult {
@@ -393,73 +484,6 @@ impl FormValue {
     }
 }
 
-#[derive(Debug)]
-struct RsvpFormData {
-    // TODO(jacob): Figure out how to make this a reference, as with the key on Rsvp.
-    key: Value,
-    attending: Vec<Guest>,
-    email: String,
-    going: bool,
-    other_notes: String,
-}
-
-impl RsvpFormData {
-    fn from_form_data(
-        account_data: &AccountData,
-        form_data: &[u8]
-    ) -> Option<RsvpFormData> {
-        let params = FormValue::parse_form_data(form_data);
-
-        let token = params.get("token")?.as_string()?;
-        let token_data = jwt::decode::<Value>(
-            &token,
-            &account_data.public_key,
-            &Validation::new(Algorithm::RS256),
-        ).ok()?;
-        let key = token_data.claims;
-
-        let first_names = params.get("first_name")?.as_array()?;
-        let last_names = params.get("last_name")?.as_array()?;
-        let dietary_noteses = params.get("dietary_notes")?.as_array()?;
-        let attending = first_names.into_iter().zip(last_names).zip(dietary_noteses)
-            .map(|((first_name, last_name), dietary_notes)| {
-                Guest {
-                    name: Name {
-                        first_name: first_name,
-                        last_name: last_name,
-                    },
-                    dietary_notes: dietary_notes,
-                }
-            }).collect();
-
-        let email = params.get("email")?.as_string()?;
-        let going = params.get("going")
-            .map_or(Some(false), |going_param| Some(going_param.as_string()? == "yes"))?;
-        let other_notes = params.get("other_notes")?.as_string()?;
-
-        let rsvp_data = RsvpFormData {
-            key: key,
-            attending: attending,
-            email: email,
-            going: going,
-            other_notes: other_notes,
-        };
-        Some(rsvp_data)
-    }
-
-    fn to_json(&self) -> Value {
-        json!({
-            "key": self.key,
-            "properties": {
-                "attending": render_array_value(&self.attending, &|guest| guest.to_json()),
-                "email": render_string_value(&self.email),
-                "going": render_boolean_value(self.going),
-                "other_notes": render_string_value(&self.other_notes),
-            },
-        })
-    }
-}
-
 #[derive(Clone)]
 struct RsvpService {
     datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
@@ -528,13 +552,13 @@ impl RsvpService {
     fn build_commit_request(
         account_data: &AccountData,
         transaction_id: &str,
-        rsvp_data: RsvpFormData,
+        rsvp: Rsvp,
     ) -> client::Request<Body> {
         let commit_request = json!({
             "mode": "TRANSACTIONAL",
             "mutations": [
                 {
-                    "update": rsvp_data.to_json(),
+                    "update": rsvp.to_json(),
                 },
             ],
             "transaction": transaction_id,
@@ -648,7 +672,6 @@ impl RsvpService {
                 response.body().concat2().and_then(move |raw_query_result| {
                     let query_result_string = str::from_utf8(&raw_query_result)
                         .expect("unable to parse database rsvp entry");
-                    println!("{}", query_result_string);
                     let query_result_json = serde_json::from_str(query_result_string)
                         .expect("unable to parse database rsvp json");
 
@@ -696,12 +719,12 @@ impl RsvpService {
     }
 
     // TODO(jacob): This should be a method on self.
-    fn handle_submission(
+    fn handle_submission<'a>(
         account_data: AccountData,
         datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
         data: &[u8],
     ) -> Option<ResponseFuture> {
-        let rsvp_data = RsvpFormData::from_form_data(&account_data, data)?;
+        let rsvp = Rsvp::from_form_data(&account_data, data)?.clone();
         let transaction_request = RsvpService::build_transaction_request(&account_data);
 
         let response_future = datastore_client.request(transaction_request)
@@ -722,11 +745,11 @@ impl RsvpService {
                             let commit_request = RsvpService::build_commit_request(
                                 &account_data,
                                 transaction_id,
-                                rsvp_data,
+                                rsvp,
                             );
                             let response_future = datastore_client.request(commit_request)
-                                .and_then(move |commit_response| {
-                                    commit_response.body().concat2().map(move |raw_commit_result| {
+                                .and_then(|commit_response| {
+                                    commit_response.body().concat2().map(|raw_commit_result| {
                                         let commit_string = str::from_utf8(&raw_commit_result)
                                             .expect("unable to parse commit response");
 
@@ -744,11 +767,31 @@ impl RsvpService {
 
     fn get_auth_token(
         account_data: &AccountData,
-        key: &Value,
+        rsvp: &Rsvp,
     ) -> String {
+        let empty_rsvp_json = match rsvp {
+            empty @ Rsvp::Empty { .. } => empty.to_json(),
+            Rsvp::Full {
+                key,
+                attending: _,
+                email: _,
+                going: _,
+                invited,
+                other_notes: _,
+                plus_ones,
+            } => {
+                let empty = Rsvp::Empty {
+                    key: key.clone(),
+                    invited: invited.to_vec(),
+                    plus_ones: *plus_ones,
+                };
+                empty.to_json()
+            }
+        };
+
         let mut header = Header::default();
         header.alg = Algorithm::RS256;
-        jwt::encode(&header, key, &account_data.private_key)
+        jwt::encode(&header, &empty_rsvp_json, &account_data.private_key)
             .expect("Error encoding auth token")
     }
 
@@ -763,13 +806,13 @@ impl RsvpService {
         let mut guest_template = String::new();
         guest_reader.read_to_string(&mut guest_template).expect("failed to read guest template");
 
+        let token = RsvpService::get_auth_token(account_data, &rsvp);
         let rendered = match rsvp {
             Rsvp::Empty {
-                key,
+                key: _,
                 invited,
                 plus_ones,
             } => {
-                let token = RsvpService::get_auth_token(account_data, key);
                 let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
@@ -793,7 +836,7 @@ impl RsvpService {
             },
 
             Rsvp::Full {
-                key,
+                key: _,
                 attending,
                 email,
                 going,
@@ -801,7 +844,6 @@ impl RsvpService {
                 other_notes,
                 plus_ones,
             } => {
-                let token = RsvpService::get_auth_token(account_data, key);
                 let checked = if going { "checked" } else { "" };
                 let guests = (0..(invited.len() + plus_ones as usize)).fold(
                     String::new(),
@@ -864,30 +906,24 @@ impl Service for RsvpService {
                 let rsvp_credentials = self.rsvp_credentials.clone();
 
                 let response_future = request.body().concat2().and_then(move |data| {
-                    println!(
-                        "received POST data: {}",
-                        str::from_utf8(&data).unwrap_or(
-                            format!("unparseable - {:?}", data).as_str()
-                        ),
-                    );
+                    let data_str = str::from_utf8(&data).unwrap_or(
+                        format!("unparseable - {:?}", data).as_str()
+                    ).to_string();
+                    println!("received POST data: {}", data_str);
+
                     RsvpService::handle_login(
                         account_data_clone_1,
                         datastore_client_clone_1,
                         rsvp_credentials,
                         &data,
-                    ).or_else(|| {
+                    ).or_else(move || {
                         RsvpService::handle_submission(
                             account_data_clone_2,
                             datastore_client_clone_2,
                             &data,
                         )
                     }).unwrap_or_else(|| {
-                        println!(
-                            "invalid POST data: {}",
-                            str::from_utf8(&data).unwrap_or(
-                                format!("unparseable - {:?}", data).as_str()
-                            ),
-                        );
+                        println!("invalid POST data: {}", data_str);
                         let response = server::Response::new()
                             .with_status(StatusCode::BadRequest)
                             .with_body(Body::from("Bad Request"));
