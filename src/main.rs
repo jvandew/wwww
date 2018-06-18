@@ -118,6 +118,28 @@ fn parse_string_value(json: &Value) -> Option<String> {
     json["stringValue"].as_str().map(|s| s.to_string())
 }
 
+fn render_array_value<T>(values: &Vec<T>, render_value: &Fn(&T) -> Value) -> Value {
+    json!({
+        "arrayValue": {
+            "values": Value::Array(values.into_iter().map(render_value).collect()),
+        },
+    })
+}
+
+fn render_boolean_value(value: bool) -> Value {
+    json!({
+        "booleanValue": value,
+        // "excludeFromIndexes": true,
+    })
+}
+
+fn render_string_value(value: &String) -> Value {
+    json!({
+        "stringValue": value,
+        // "excludeFromIndexes": true,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct Name {
     first_name: String,
@@ -136,6 +158,17 @@ impl Name {
             last_name: last_name,
         };
         Some(name)
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "entityValue": {
+                "properties": {
+                  "first_name": render_string_value(&self.first_name),
+                  "last_name": render_string_value(&self.last_name),
+                },
+            },
+        })
     }
 }
 
@@ -157,6 +190,17 @@ impl Guest {
             dietary_notes: dietary_notes,
         };
         Some(guest)
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "entityValue": {
+                "properties": {
+                    "name": self.name.to_json(),
+                    "dietary_notes": render_string_value(&self.dietary_notes),
+                },
+            },
+        })
     }
 }
 
@@ -402,6 +446,18 @@ impl RsvpFormData {
         };
         Some(rsvp_data)
     }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "key": self.key,
+            "properties": {
+                "attending": render_array_value(&self.attending, &|guest| guest.to_json()),
+                "email": render_string_value(&self.email),
+                "going": render_boolean_value(self.going),
+                "other_notes": render_string_value(&self.other_notes),
+            },
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -424,8 +480,78 @@ impl RsvpService {
         }
     }
 
-    fn query_for_name(first_name: &str, last_name: &str) -> String {
-        json!({
+    fn get_datastore_token(account_data: &AccountData) -> String {
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Error getting unix timestamp")
+            .as_secs();
+
+        let mut jwt_header = Header::default();
+        jwt_header.alg = Algorithm::RS256;
+        jwt_header.kid = Some(account_data.details.private_key_id.clone());
+        jwt_header.typ = Some("JWT".to_string());
+
+        let claims = Claims {
+            iss: account_data.details.client_email.clone(),
+            sub: account_data.details.client_email.clone(),
+            aud: format!("{}/{}", DATASTORE_HOST, DATASTORE_API),
+            iat: time,
+            exp: time + 3600,
+        };
+
+        jwt::encode(&jwt_header, &claims, &account_data.private_key)
+            .expect("Error encoding json web token")
+    }
+
+    fn build_datastore_request(
+        account_data: &AccountData,
+        endpoint: &str,
+        request_json: String,
+    ) -> client::Request<Body> {
+        let uri = format!(
+            "{}/v1/projects/{}:{}",
+            DATASTORE_HOST,
+            account_data.details.project_id,
+            endpoint,
+        ).parse().expect("Unable to parse query uri");
+
+        let token = RsvpService::get_datastore_token(account_data);
+
+        let mut request = client::Request::new(Method::Post, uri);
+        request.headers_mut().set(Accept(vec![header::qitem(APPLICATION_JSON)]));
+        request.headers_mut().set(Authorization(Bearer { token: token }));
+        request.headers_mut().set(ContentType(APPLICATION_JSON));
+        request.set_body(Body::from(request_json));
+        request
+    }
+
+    fn build_commit_request(
+        account_data: &AccountData,
+        transaction_id: &str,
+        rsvp_data: RsvpFormData,
+    ) -> client::Request<Body> {
+        let commit_request = json!({
+            "mode": "TRANSACTIONAL",
+            "mutations": [
+                {
+                    "update": rsvp_data.to_json(),
+                },
+            ],
+            "transaction": transaction_id,
+        }).to_string();
+        RsvpService::build_datastore_request(
+            account_data,
+            "commit",
+            commit_request,
+        )
+    }
+
+    fn build_query_request(
+        account_data: &AccountData,
+        first_name: &str,
+        last_name: &str,
+    ) -> client::Request<Body> {
+        let query_request = json!({
             "query": {
                 "filter": {
                     "compositeFilter": {
@@ -462,47 +588,22 @@ impl RsvpService {
                     },
                 ],
             },
-        }).to_string()
+        }).to_string();
+        RsvpService::build_datastore_request(account_data, "runQuery", query_request)
     }
 
-    fn get_datastore_token(account_data: &AccountData) -> String {
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Error getting unix timestamp")
-            .as_secs();
-
-        let mut jwt_header = Header::default();
-        jwt_header.alg = Algorithm::RS256;
-        jwt_header.kid = Some(account_data.details.private_key_id.clone());
-        jwt_header.typ = Some("JWT".to_string());
-
-        let claims = Claims {
-            iss: account_data.details.client_email.clone(),
-            sub: account_data.details.client_email.clone(),
-            aud: format!("{}/{}", DATASTORE_HOST, DATASTORE_API),
-            iat: time,
-            exp: time + 3600,
-        };
-
-        jwt::encode(&jwt_header, &claims, &account_data.private_key)
-            .expect("Error encoding json web token")
-    }
-
-    fn build_query_request(account_data: &AccountData, query: String) -> client::Request<Body> {
-        let uri = format!(
-            "{}/v1/projects/{}:runQuery",
-            DATASTORE_HOST,
-            account_data.details.project_id,
-        ).parse().expect("Unable to parse query uri");
-
-        let token = RsvpService::get_datastore_token(account_data);
-
-        let mut request = client::Request::new(Method::Post, uri);
-        request.headers_mut().set(Accept(vec![header::qitem(APPLICATION_JSON)]));
-        request.headers_mut().set(Authorization(Bearer { token: token }));
-        request.headers_mut().set(ContentType(APPLICATION_JSON));
-        request.set_body(Body::from(query));
-        request
+    fn build_transaction_request(account_data: &AccountData) -> client::Request<Body> {
+        let transaction_request = json!({
+            "transactionOptions": {
+                "readWrite": {
+                }
+            }
+        }).to_string();
+        RsvpService::build_datastore_request(
+            account_data,
+            "beginTransaction",
+            transaction_request,
+        )
     }
 
     fn failed_login(status_code: StatusCode, reason: String) -> ResponseFuture {
@@ -537,16 +638,17 @@ impl RsvpService {
             Some(response_future)
 
         } else {
-            let query = RsvpService::query_for_name(
+            let request = RsvpService::build_query_request(
+                &account_data,
                 &login_data.first_name,
                 &login_data.last_name,
             );
-            let request = RsvpService::build_query_request(&account_data, query);
 
             let response_future = datastore_client.request(request).and_then(move |response| {
                 response.body().concat2().and_then(move |raw_query_result| {
                     let query_result_string = str::from_utf8(&raw_query_result)
                         .expect("unable to parse database rsvp entry");
+                    println!("{}", query_result_string);
                     let query_result_json = serde_json::from_str(query_result_string)
                         .expect("unable to parse database rsvp json");
 
@@ -600,10 +702,44 @@ impl RsvpService {
         data: &[u8],
     ) -> Option<ResponseFuture> {
         let rsvp_data = RsvpFormData::from_form_data(&account_data, data)?;
-        let response = server::Response::new()
-            .with_status(StatusCode::BadRequest)
-            .with_body(Body::from("Bad Request"));
-        Some(Box::new(future::ok(response)))
+        let transaction_request = RsvpService::build_transaction_request(&account_data);
+
+        let response_future = datastore_client.request(transaction_request)
+            .and_then(move |transaction_response| {
+                transaction_response.body().concat2().and_then(move |raw_result| {
+                    let transaction_string = str::from_utf8(&raw_result)
+                        .expect("unable to parse transaction response");
+                    let transaction_json = serde_json::from_str::<Value>(transaction_string)
+                        .expect("unable to parse transaction json");
+
+                    transaction_json["transaction"].as_str().map_or_else(
+                        || RsvpService::failed_login(
+                            StatusCode::InternalServerError,
+                            "Database query failure, please contact Jacob.".to_string(),
+                        ),
+
+                        |transaction_id| {
+                            let commit_request = RsvpService::build_commit_request(
+                                &account_data,
+                                transaction_id,
+                                rsvp_data,
+                            );
+                            let response_future = datastore_client.request(commit_request)
+                                .and_then(move |commit_response| {
+                                    commit_response.body().concat2().map(move |raw_commit_result| {
+                                        let commit_string = str::from_utf8(&raw_commit_result)
+                                            .expect("unable to parse commit response");
+
+                                        server::Response::new()
+                                            .with_body(Body::from(commit_string.to_string()))
+                                    })
+                                });
+                            Box::new(response_future)
+                        }
+                    )
+                })
+            });
+        Some(Box::new(response_future))
     }
 
     fn get_auth_token(
