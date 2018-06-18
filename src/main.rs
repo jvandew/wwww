@@ -220,7 +220,7 @@ enum Rsvp {
     Empty {
         key: Value,
         invited: Vec<Name>,
-        plus_ones: u8,
+        invited_count: u8,
     },
     /* A database entry for someone who has RSVPed */
     Full {
@@ -230,7 +230,7 @@ enum Rsvp {
         going: bool,
         invited: Vec<Name>,
         other_notes: String,
-        plus_ones: u8,
+        invited_count: u8,
     },
 }
 
@@ -250,7 +250,7 @@ impl Rsvp {
 
         let key = token_data.get("key")?.clone();
         let invited = parse_array_value(&token_data["invited"], &Name::from_json)?;
-        let plus_ones = parse_integer_value(&token_data["plus_ones"])?;
+        let invited_count = parse_integer_value(&token_data["invited_count"])?;
 
         let first_names = params.get("first_name")?.as_array()?;
         let last_names = params.get("last_name")?.as_array()?;
@@ -278,7 +278,7 @@ impl Rsvp {
             invited: invited,
             going: going,
             other_notes: other_notes,
-            plus_ones: plus_ones,
+            invited_count: invited_count,
         };
         Some(full_rsvp)
     }
@@ -289,14 +289,14 @@ impl Rsvp {
         let key = json["entity"]["key"].clone();
         let properties = &json["entity"]["properties"];
         let invited = parse_array_value(&properties["invited"], &Name::from_json)?;
-        let plus_ones = parse_integer_value(&properties["plus_ones"])?;
+        let invited_count = parse_integer_value(&properties["invited_count"])?;
 
         match parse_boolean_value(&properties["going"]) {
             None => {
                 let empty_rsvp = Rsvp::Empty {
                     key: key,
                     invited: invited,
-                    plus_ones: plus_ones,
+                    invited_count: invited_count,
                 };
                 Some(empty_rsvp)
             },
@@ -313,7 +313,7 @@ impl Rsvp {
                     going: going,
                     invited: invited,
                     other_notes: other_notes,
-                    plus_ones: plus_ones,
+                    invited_count: invited_count,
                 };
                 Some(full_rsvp)
             },
@@ -325,11 +325,11 @@ impl Rsvp {
             Rsvp::Empty {
                 key,
                 invited,
-                plus_ones,
+                invited_count,
             } => json!({
                 "key": key,
                 "invited": render_array_value(&invited, &|name| name.to_json(false)),
-                "plus_ones": render_integer_value(&plus_ones.to_string(), true),
+                "invited_count": render_integer_value(&invited_count.to_string(), true),
             }),
 
             Rsvp::Full {
@@ -339,7 +339,7 @@ impl Rsvp {
                 going,
                 invited,
                 other_notes,
-                plus_ones,
+                invited_count,
             } => json!({
                 "key": key,
                 "properties": {
@@ -348,7 +348,7 @@ impl Rsvp {
                     "invited": render_array_value(&invited, &|name| name.to_json(false)),
                     "going": render_boolean_value(&going, false),
                     "other_notes": render_string_value(&other_notes, true),
-                    "plus_ones": render_integer_value(&plus_ones.to_string(), true),
+                    "invited_count": render_integer_value(&invited_count.to_string(), true),
                 },
             }),
         }
@@ -778,12 +778,12 @@ impl RsvpService {
                 going: _,
                 invited,
                 other_notes: _,
-                plus_ones,
+                invited_count,
             } => {
                 let empty = Rsvp::Empty {
                     key: key.clone(),
                     invited: invited.to_vec(),
-                    plus_ones: *plus_ones,
+                    invited_count: *invited_count,
                 };
                 empty.to_json()
             }
@@ -810,10 +810,10 @@ impl RsvpService {
         let rendered = match rsvp {
             Rsvp::Empty {
                 key: _,
-                invited,
-                plus_ones,
+                invited: _,
+                invited_count,
             } => {
-                let guests = (0..(invited.len() + plus_ones as usize)).fold(
+                let guests = (0..invited_count).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
                         let rendered_guest = guest_template
@@ -840,15 +840,15 @@ impl RsvpService {
                 attending,
                 email,
                 going,
-                invited,
+                invited: _,
                 other_notes,
-                plus_ones,
+                invited_count,
             } => {
                 let checked = if going { "checked" } else { "" };
-                let guests = (0..(invited.len() + plus_ones as usize)).fold(
+                let guests = (0..invited_count).fold(
                     String::new(),
                     |mut guests_builder, guest_num| {
-                        let attending_opt = attending.get(guest_num);
+                        let attending_opt = attending.get(guest_num as usize);
                         let first_name = attending_opt
                             .map(|a| a.name.first_name.clone())
                             .unwrap_or("".to_string());
