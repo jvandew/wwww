@@ -64,6 +64,7 @@ struct AccountDetails {
 struct AccountData {
     details: AccountDetails,
     private_key: Vec<u8>,
+    public_key: Vec<u8>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -368,8 +369,8 @@ impl RsvpFormData {
         let token = params.get("token")?.as_string()?;
         let token_data = jwt::decode::<Value>(
             &token,
-            &account_data.private_key,
-            &Validation::default(),
+            &account_data.public_key,
+            &Validation::new(Algorithm::RS256),
         ).ok()?;
         let key = token_data.claims;
 
@@ -609,7 +610,9 @@ impl RsvpService {
         account_data: &AccountData,
         key: &Value,
     ) -> String {
-        jwt::encode(&Header::default(), key, &account_data.private_key)
+        let mut header = Header::default();
+        header.alg = Algorithm::RS256;
+        jwt::encode(&header, key, &account_data.private_key)
             .expect("Error encoding auth token")
     }
 
@@ -739,7 +742,7 @@ impl Service for RsvpService {
                     ).or_else(|| {
                         RsvpService::handle_submission(
                             account_data_clone_2,
-                            datastore_client_clone_1,
+                            datastore_client_clone_2,
                             &data,
                         )
                     }).unwrap_or_else(|| {
@@ -775,9 +778,12 @@ fn main() {
         .expect("failed to parse account details");
     let account_private_key = fs::read("keys/private_rsa_key.der")
         .expect("Failed to read account private key");
+    let account_public_key = fs::read("keys/public_rsa_key.der")
+        .expect("Failed to read account public key");
     let account_data = AccountData {
         details: account_details,
         private_key: account_private_key,
+        public_key: account_public_key,
     };
 
     let rsvp_credentials_file = File::open("keys/rsvp_credentials.json")
