@@ -391,6 +391,33 @@ impl RsvpQueryResult {
 }
 
 #[derive(Debug)]
+struct CommitResult {
+    index_updates: Option<u64>,
+    version: String,
+}
+
+impl CommitResult {
+    fn from_json(json: &Value) -> Option<CommitResult> {
+        let version = json
+            .get("mutationResults")?
+            .as_array()?
+            .get(0)?
+            .get("version")?
+            .as_str()?
+            .to_string();
+        let index_updates = json.get("index_updates").map_or(
+            Some(None),
+            |value| value.as_u64().map(|num| Some(num)),
+        )?;
+        let commit_result = CommitResult {
+            index_updates: index_updates,
+            version: version,
+        };
+        Some(commit_result)
+    }
+}
+
+#[derive(Debug)]
 enum FormValue {
     String(String),
     Array(Vec<String>),
@@ -694,9 +721,12 @@ impl RsvpService {
                             )
                         },
 
-                        RsvpQueryResult::Single(rsvp) => {
-                            RsvpService::render_form(&account_data, rsvp)
-                        },
+                        RsvpQueryResult::Single(rsvp) => RsvpService::render_form(
+                            &account_data,
+                            rsvp,
+                            None,
+                            StatusCode::Ok,
+                        ),
                     }
                 })
             });
@@ -724,7 +754,18 @@ impl RsvpService {
         datastore_client: Client<HttpsConnector<HttpConnector>, Body>,
         data: &[u8],
     ) -> Option<ResponseFuture> {
-        let rsvp = Rsvp::from_form_data(&account_data, data)?.clone();
+        // TODO(jacob): There are a bunch of clones in this function. They would seem to
+        //      be removable by just having the closures borrow their values instead of
+        //      taking ownership, but that may not be possible due to the static lifetime
+        //      of the futures these closures are operating over. If it isn't possible,
+        //      we should just have Rsvp implement Copy so this happens automatically.
+        let account_data1 = account_data.clone();
+        let account_data2 = account_data.clone();
+        let account_data3 = account_data.clone();
+        let rsvp1 = Rsvp::from_form_data(&account_data, data)?;
+        let rsvp2 = Rsvp::from_form_data(&account_data, data)?;
+        let rsvp3 = Rsvp::from_form_data(&account_data, data)?;
+        let rsvp4 = Rsvp::from_form_data(&account_data, data)?;
         let transaction_request = RsvpService::build_transaction_request(&account_data);
 
         let response_future = datastore_client.request(transaction_request)
@@ -736,29 +777,70 @@ impl RsvpService {
                         .expect("unable to parse transaction json");
 
                     transaction_json["transaction"].as_str().map_or_else(
-                        || RsvpService::failed_login(
-                            StatusCode::InternalServerError,
-                            "Database query failure, please contact Jacob.".to_string(),
-                        ),
+                        || {
+                            let message = RsvpService::render_message(
+                                "Error saving rsvp, please try again later  and contact \
+                                Jacob if this error persists.",
+                                true,
+                            );
+                            RsvpService::render_form(
+                                &account_data,
+                                rsvp1,
+                                Some(&message),
+                                StatusCode::InternalServerError,
+                            )
+                        },
 
                         |transaction_id| {
                             let commit_request = RsvpService::build_commit_request(
-                                &account_data,
+                                &account_data1,
                                 transaction_id,
-                                rsvp,
+                                rsvp2,
                             );
                             let response_future = datastore_client.request(commit_request)
-                                .and_then(|commit_response| {
-                                    commit_response.body().concat2().map(|raw_commit_result| {
+                                .and_then(move |commit_response| {
+                                    commit_response.body().concat2().and_then(move |raw_commit_result| {
                                         let commit_string = str::from_utf8(&raw_commit_result)
                                             .expect("unable to parse commit response");
+                                        let commit_json = serde_json::from_str::<Value>(commit_string)
+                                            .expect("unable to parse commit json");
 
-                                        server::Response::new()
-                                            .with_body(Body::from(commit_string.to_string()))
+                                        CommitResult::from_json(&commit_json).map_or_else(
+                                            || {
+                                                let message = RsvpService::render_message(
+                                                    "Error saving rsvp, please try again later \
+                                                    and contact Jacob if this error persists.",
+                                                    true,
+                                                );
+                                                RsvpService::render_form(
+                                                    &account_data2,
+                                                    rsvp3,
+                                                    Some(&message),
+                                                    StatusCode::InternalServerError,
+                                                )
+                                            },
+
+                                            |commit_result| {
+                                                println!(
+                                                    "successfully saved rsvp with result: {:?}",
+                                                    commit_result,
+                                                );
+                                                let message = RsvpService::render_message(
+                                                    "Rsvp saved successfully!",
+                                                    false,
+                                                );
+                                                RsvpService::render_form(
+                                                    &account_data3,
+                                                    rsvp4,
+                                                    Some(&message),
+                                                    StatusCode::Ok,
+                                                )
+                                            },
+                                        )
                                     })
                                 });
                             Box::new(response_future)
-                        }
+                        },
                     )
                 })
             });
@@ -795,7 +877,17 @@ impl RsvpService {
             .expect("Error encoding auth token")
     }
 
-    fn render_form(account_data: &AccountData, rsvp: Rsvp) -> ResponseFuture {
+    fn render_message(message: &str, error: bool) -> String {
+        let div = if error { "<div style=\"color: red\">" } else { "<div>" };
+        format!("{}{}</div><a href=\"/\">Return home</a>", div, message)
+    }
+
+    fn render_form(
+        account_data: &AccountData,
+        rsvp: Rsvp,
+        message_opt: Option<&str>,
+        status_code: StatusCode,
+    ) -> ResponseFuture {
         let form_file = File::open("www/rsvp2.html").expect("failed to open rsvp form template");
         let mut form_reader = BufReader::new(form_file);
         let mut form_template = String::new();
@@ -807,6 +899,7 @@ impl RsvpService {
         guest_reader.read_to_string(&mut guest_template).expect("failed to read guest template");
 
         let token = RsvpService::get_auth_token(account_data, &rsvp);
+        let message = message_opt.unwrap_or("");
         let rendered = match rsvp {
             Rsvp::Empty {
                 key: _,
@@ -828,6 +921,7 @@ impl RsvpService {
                 );
 
                 form_template
+                    .replace("$message", message)
                     .replace("$token", &token)
                     .replace("$checked", "checked")
                     .replace("$guests", &guests)
@@ -870,6 +964,7 @@ impl RsvpService {
                 );
 
                 form_template
+                    .replace("$message", message)
                     .replace("$token", &token)
                     .replace("$checked", &checked)
                     .replace("$guests", &guests)
@@ -879,6 +974,7 @@ impl RsvpService {
         };
 
         let response = server::Response::new()
+            .with_status(status_code)
             .with_body(Body::from(rendered));
         Box::new(future::ok(response))
     }
