@@ -763,9 +763,9 @@ impl RsvpService {
         let account_data2 = account_data.clone();
         let account_data3 = account_data.clone();
         let rsvp1 = Rsvp::from_form_data(&account_data, data)?;
-        let rsvp2 = Rsvp::from_form_data(&account_data, data)?;
-        let rsvp3 = Rsvp::from_form_data(&account_data, data)?;
-        let rsvp4 = Rsvp::from_form_data(&account_data, data)?;
+        let rsvp2 = rsvp1.clone();
+        let rsvp3 = rsvp1.clone();
+        let rsvp4 = rsvp1.clone();
         let transaction_request = RsvpService::build_transaction_request(&account_data);
 
         let response_future = datastore_client.request(transaction_request)
