@@ -18,3 +18,5 @@ Cargo.lock
 # Googlde Cloud datastore auth files
 /keys/
 
+# Python virtualenv
+/.pvenv/
