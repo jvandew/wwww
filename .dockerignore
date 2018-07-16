@@ -1,0 +1,11 @@
+# Rust build artifacts and data
+/target/
+Cargo.lock
+**/*.rs.bk
+/bin/
+
+# Python virtualenv
+/.pvenv/
+
+# scripts
+/scripts/
