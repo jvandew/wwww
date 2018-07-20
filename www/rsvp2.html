@@ -19,7 +19,7 @@
   <div id="background"></div>
   <div id="main-container" style="font-size: 18px; text-align: center;">
     <div id="theme-padding"></div>
-    <div id="content">
+    <div id="content" style="padding-bottom: 64px;">
       <div id="page">
         <section>
           <div class="section-title">The RSVP</div>
@@ -31,7 +31,7 @@
         <div class="section-separator"></div>
         <section>
           <form action="/rsvp.html" method="post">
-            <label style="color: #F0E097;">Will you be joining us?</label>
+            <label style="color: #F0E097;">Will you be celebrating with us?</label>
             <input type="checkbox" id="going" name="going" value="yes" $checked/>
             <label for="going" style="display: inline;">Yes, I will be attending!</label>
             <div id="going-inputs">
@@ -43,7 +43,7 @@
               </div>
               <div class="item-separator"></div>
               <div>
-                <label style="color: #F0E097;">Other notes</label>
+                <label style="color: #F0E097;">Song recommendations, life advice, other notes</label>
                 <textarea name="other_notes">$other_notes</textarea>
               </div>
             </div>
@@ -59,13 +59,20 @@
               <input type="hidden" name="token" value="$token">
               <input type="submit" value="Submit">
             </div>
+            <div class="item-separator"></div>
           </form>
         </section>
       </div>
     </div>
     <footer>
       <div id="footer-text">
-        Original design by Wedding Paper Divas. Shamelessly stolen from <a href="https://www.theknot.com/us/default?theme_id=282" target="_blank">The Knot</a>.
+        <div style="font-size: 14px;">
+          Need help? Is something terribly, horribly broken? <a href="mailto:ericaandjacob7317@gmail.com" style="color: #F0E097;">Complain to Jacob</a>
+        </div>
+        <div class="item-separator"></div>
+        <div>
+          Original design by Wedding Paper Divas. Shamelessly stolen from <a href="https://www.theknot.com/us/default?theme_id=282" target="_blank">The Knot</a>.
+        </div>
       </div>
     </div>
   </div>
