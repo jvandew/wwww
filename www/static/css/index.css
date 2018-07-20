@@ -250,11 +250,11 @@ footer a {
 
 .item-description,
 .wedding-event-description,
-.wedding-party-description
+.wedding-party-description,
 .event-section-description,
 .wedding-event-section-description,
 .wedding-party-section-description {
-  text-align: left;
+  text-align: center;
   max-width: 840px;
   margin: 0 auto;
   font-size: 1.4em
@@ -343,7 +343,7 @@ footer a {
 }
 
 .wedding-party-title {
-  text-align: left;
+  text-align: center;
   font-size: 1.5em;
   margin-bottom: 8px
 }
@@ -414,10 +414,6 @@ footer a {
 
   #page {
     width: 90%;
-  }
-
-  .wedding-party-title {
-    text-align: center;
   }
 
   .section-title-border-bottom,
