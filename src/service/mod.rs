@@ -289,7 +289,14 @@ impl RsvpService {
     }
 
     fn handle_static(uri: Uri) -> ResponseFuture {
-        let response = File::open(format!("www{}", uri)).ok().map_or_else(
+        let path = {
+            if uri.path().ends_with("/") {
+                format!("{}index.html", uri.path())
+            } else {
+                uri.path().to_string()
+            }
+        };
+        let response = File::open(format!("www{}", path)).ok().map_or_else(
             || server::Response::new()
                 .with_status(StatusCode::NotFound)
                 .with_body("Not Found"),
