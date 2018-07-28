@@ -322,13 +322,6 @@ footer a {
   margin-bottom: 24px
 }
 
-.item-separator:last-of-type,
-.event-separator:last-of-type,
-.wedding-event-separator:last-of-type {
-  visibility: hidden !important;
-  display: none !important
-}
-
 .wedding-event-address,
 .wedding-event-venue,
 .wedding-event-attire,
@@ -366,6 +359,21 @@ footer a {
   font-style: normal;
   font-weight: normal;
   color: #4D483F;
+}
+
+.lodging-list {
+  list-style-type: none;
+  padding-left: 0;
+  text-align: left;
+}
+
+.lodging-list,
+a {
+  font-size: 1em;
+}
+
+.venue-title {
+  color: #F0E097;
 }
 
 @media (max-width: 1199px) {
